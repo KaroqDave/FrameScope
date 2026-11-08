@@ -8,13 +8,13 @@ at that moment: DPC latency, paging, throttling, background load, CCD placement.
 
 No injection, no overlay hooks. Everything comes from ETW, so it's safe with anti-cheat.
 
-## Status: M2
+## Status: M3
 
 | Milestone | Scope | State |
 |---|---|---|
 | **M1** | PresentMon capture, spike detection, frame-time graph | ✅ done |
 | **M2** | ETW kernel trace: DPC/ISR per driver, hard faults, disk I/O; cause per spike | ✅ done, needs testing on real hardware |
-| M3 | Throttling (NVML/ADLX, PDH), VRAM, background processes, X3D CCD check | |
+| **M3** | GPU/CPU throttling, RAM/VRAM pressure, background load, X3D CCD check, findings | ✅ done, needs testing on real hardware |
 | M4 | Baseline tests, repeat-run comparison, verdict report | |
 
 ## What M1 does
@@ -46,8 +46,7 @@ Each spike gets a **side**, a **cause**, a **confidence** and the **evidence**:
 | Game GPU work | Game | GPU-bound frame, no big system cause |
 | Unexplained wait | Unknown | Nothing busy, no system event found (sync? M3 adds more signals) |
 
-"Mixed" means it could be either side: hard faults are memory pressure *or* the game reading
-mapped files. M3 adds RAM data to tell them apart.
+"Mixed" means it could be either side (e.g. slow storage, or VRAM full because of high settings).
 
 Spikes get their cause about 2 s after they happen, once the trace has delivered that window.
 On the graph: red = system, violet = game, amber = mixed, white = pending or unknown.
@@ -56,6 +55,38 @@ latency (nvlddmkm.sys)").
 
 The ETW session is a private system logger (Windows 8+), so it doesn't collide with LatencyMon
 or xperf. If that fails it falls back to the classic NT Kernel Logger.
+
+## What M3 adds
+
+More signals, sampled 4× per second or built from context switches:
+
+| Source | What | Used for |
+|---|---|---|
+| ETW context switches | Game CPU time per CCD, thread migrations, other processes' CPU time (10 ms buckets) | CCD scheduling, background load |
+| `GetLogicalProcessorInformationEx` | L3 cache groups → which CCD has 3D V-Cache | CCD scheduling |
+| PDH (English counter names, works on any Windows language) | Available RAM, page-ins/s, CPU `% Performance Limit`, the game's dedicated VRAM | Low memory, CPU throttling, VRAM full |
+| DXGI | Total VRAM | VRAM full |
+| NVML (from the NVIDIA driver, loaded at runtime) | GPU clock, temperature, power, throttle reasons | GPU throttling |
+
+New causes per spike, checked in this order after driver latency:
+
+| Cause | Side | When |
+|---|---|---|
+| GPU throttling | System | NVML reports HW/SW thermal, power brake or HW slowdown (the normal power cap doesn't count) |
+| Low memory | System | Game hard faults while free RAM was under 1.5 GB or 5% |
+| Hard page faults | Game | Same faults with plenty of free RAM: the game is loading data |
+| VRAM full | Mixed | Game uses ≥ 95% of VRAM: lower texture settings |
+| CPU throttling | System | `% Performance Limit` ≥ 10% in a CPU-side spike |
+| Background load | System | Other processes used ≥ 4 cores on average during the frame, mostly one process |
+| CCD scheduling | System | ≥ 40% of the game's CPU time off the V-Cache CCD, or ≥ 3 cross-CCD migrations in the frame |
+
+The **Findings** tab checks the whole session: worst driver latency, how much of the game's CPU
+time ran on the V-Cache CCD, GPU throttling, minimum free RAM, peak VRAM, CPU limits.
+
+Spikes now get their cause about 4 s after they happen. Context-switch data arrives ~2 s late
+because each CPU's ETW buffer is delivered separately.
+
+AMD GPUs (ADLX) are not covered yet; RAM, VRAM and CPU checks work on any system.
 
 ### framescope-latency
 
@@ -67,7 +98,9 @@ framescope-latency --nt-kernel-logger    # force the classic session
 ```
 
 It prints the worst drivers by single DPC/ISR plus a verdict (under 0.5 ms good, under 2 ms OK,
-over 2 ms a problem). Run it idle and again with the game running.
+over 2 ms a problem). Run it idle and again with the game running. It also shows the CPU
+topology, which sensors work, and whether context-switch data arrives (~100 buckets/s), which
+makes it the quickest way to check M2/M3 on a new machine.
 
 ## Build
 
@@ -105,8 +138,8 @@ framescope-cli capture.csv --top 10
 
 - **The ETW event layouts are untested on real hardware so far.** They're parsed by hand from
   the documented kernel MOF classes (PerfInfo DPC/ISR, PageFault_HardFault, DiskIo, Thread,
-  Image). If `framescope-latency` shows only `unknown` drivers or no events at all, that's
-  the place to look (`src/etw/KernelTrace.cpp`).
+  Image, CSwitch). If `framescope-latency` shows only `unknown` drivers, no events or no CPU
+  buckets, that's the place to look (`src/etw/KernelTrace.cpp`).
 
 - PresentMon flags used: `--process_name`, `--output_stdout`, `--session_name`,
   `--stop_existing_session`, `--terminate_existing_session` (in
@@ -121,6 +154,7 @@ framescope-cli capture.csv --top 10
 ```
 src/core/      pure C++: CSV parser, spike detector, stats, event timeline, correlator
 src/etw/       ETW kernel trace (Windows; stub elsewhere)
+src/win/       system sampler (PDH, DXGI, NVML), CPU topology, process names
 src/capture/   PresentMon process wrapper (Qt)
 src/ui/        main window, frame-time graph
 src/cli/       offline analyser, latency check

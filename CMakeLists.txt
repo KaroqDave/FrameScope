@@ -34,6 +34,8 @@ add_library(framescope_core STATIC
     src/core/CaptureSession.h
     src/core/CaptureSession.cpp
     src/core/SystemEvent.h
+    src/core/SystemSample.h
+    src/core/SystemSample.cpp
     src/core/EventTimeline.h
     src/core/EventTimeline.cpp
     src/core/Attribution.h
@@ -45,16 +47,19 @@ add_library(framescope_core STATIC
 target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------------------
-# ETW kernel trace (Windows; a stub elsewhere so everything still builds).
+# Platform layer: ETW kernel trace, system sampler, CPU topology.
+# Windows only; stubs elsewhere so everything still builds.
 # ---------------------------------------------------------------------------
-add_library(framescope_etw STATIC
+add_library(framescope_platform STATIC
     src/etw/KernelTrace.h
     src/etw/KernelTrace.cpp
+    src/win/SystemSampler.h
+    src/win/SystemSampler.cpp
 )
-target_link_libraries(framescope_etw PUBLIC framescope_core)
+target_link_libraries(framescope_platform PUBLIC framescope_core)
 if(WIN32)
-    target_link_libraries(framescope_etw PRIVATE advapi32)
-    target_compile_definitions(framescope_etw PRIVATE UNICODE _UNICODE)
+    target_link_libraries(framescope_platform PRIVATE advapi32 pdh dxgi)
+    target_compile_definitions(framescope_platform PRIVATE UNICODE _UNICODE)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -67,7 +72,7 @@ if(FRAMESCOPE_BUILD_CLI)
     # System latency check (DPC/ISR per driver), Windows only.
     if(WIN32)
         add_executable(framescope-latency src/cli/latency.cpp)
-        target_link_libraries(framescope-latency PRIVATE framescope_etw)
+        target_link_libraries(framescope-latency PRIVATE framescope_platform)
     endif()
 endif()
 
@@ -103,7 +108,7 @@ if(FRAMESCOPE_BUILD_GUI)
     endif()
 
     qt_add_executable(framescope WIN32 ${FRAMESCOPE_GUI_SOURCES})
-    target_link_libraries(framescope PRIVATE framescope_core framescope_etw Qt6::Widgets)
+    target_link_libraries(framescope PRIVATE framescope_core framescope_platform Qt6::Widgets)
 endif()
 
 # ---------------------------------------------------------------------------

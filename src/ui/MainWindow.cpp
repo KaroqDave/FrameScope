@@ -11,12 +11,14 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -46,6 +48,21 @@ QTableWidgetItem* textItem(std::string_view text)
     return new QTableWidgetItem(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
 }
 
+QColor findingColor(core::Finding::Level level)
+{
+    switch (level) {
+    case core::Finding::Level::Good:    return {0x43, 0xa0, 0x47};
+    case core::Finding::Level::Info:    return {0x60, 0x7d, 0x8b};
+    case core::Finding::Level::Warning: return {0xef, 0x8f, 0x00};
+    case core::Finding::Level::Problem: return {0xe5, 0x39, 0x35};
+    }
+    return {};
+}
+
+// Spikes are attributed once the trace has covered them. CPU buckets lag
+// ~2 s behind (per-CPU ETW buffers), so wait a bit longer than that.
+constexpr double kSettleMs = 4000.0;
+
 QColor sideColor(core::Side side)
 {
     switch (side) {
@@ -63,6 +80,7 @@ MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , m_timeline(etw::KernelTrace::qpcFrequency())
 {
+    m_correlatorConfig.processName = [](std::uint32_t pid) { return win::processName(pid); };
     buildUi();
 
     QSettings settings;
@@ -79,6 +97,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&m_capture, &capture::PresentMonCapture::failed, this, [this](const QString& msg) {
         log(msg);
         m_trace.stop();
+        m_sampler.stop();
+        m_traceTimer->stop();
         setCapturing(false);
         QMessageBox::warning(this, tr("Capture failed"), msg);
     });
@@ -109,6 +129,7 @@ MainWindow::~MainWindow()
     settings.setValue(kKeyTrace, m_traceCheck->isChecked());
     m_capture.stop();
     m_trace.stop();
+    m_sampler.stop();
 }
 
 void MainWindow::buildUi()
@@ -131,8 +152,8 @@ void MainWindow::buildUi()
 
     m_traceCheck = new QCheckBox(tr("System trace"));
     m_traceCheck->setToolTip(etw::KernelTrace::isSupported()
-                                 ? tr("Record driver latency (DPC/ISR), hard page faults and disk I/O "
-                                      "to find out what caused each spike.")
+                                 ? tr("Record driver latency, page faults, disk I/O, CPU scheduling, "
+                                      "RAM/VRAM and GPU sensors to find out what caused each spike.")
                                  : tr("Only available on Windows."));
     m_traceCheck->setEnabled(etw::KernelTrace::isSupported());
 
@@ -188,16 +209,24 @@ void MainWindow::buildUi()
             m_view->focusTime(rows.first().data(Qt::UserRole).toDouble());
     });
 
-    // ---- Log
+    // ---- Findings + log
+    m_findings = new QListWidget;
+    m_findings->setWordWrap(true);
+    m_findings->setSelectionMode(QAbstractItemView::NoSelection);
+
     m_log = new QPlainTextEdit;
     m_log->setReadOnly(true);
     m_log->setMaximumBlockCount(2000);
 
+    auto* tabs = new QTabWidget;
+    tabs->addTab(m_findings, tr("Findings"));
+    tabs->addTab(m_log, tr("Log"));
+
     auto* bottom = new QSplitter(Qt::Horizontal);
     bottom->addWidget(m_spikeTable);
-    bottom->addWidget(m_log);
+    bottom->addWidget(tabs);
     bottom->setStretchFactor(0, 3);
-    bottom->setStretchFactor(1, 1);
+    bottom->setStretchFactor(1, 2);
 
     auto* main = new QSplitter(Qt::Vertical);
     main->addWidget(m_view);
@@ -237,17 +266,30 @@ void MainWindow::startCapture()
     m_view->setFollow(true);
     m_view->setSpanSeconds(30.0);
     m_warnedNoDpc = false;
+    m_loggedSensors = false;
+    m_gamePid = 0;
+    m_findings->clear();
     setCapturing(true);
 
     // Start the system trace first so it covers the very first frames.
     if (m_traceCheck->isChecked()) {
-        if (m_trace.start()) {
+        const auto topo = win::queryCpuTopology();
+        m_timeline.setTopology(topo);
+        if (topo.hasAsymmetricCache())
+            log(tr("CPU has 3D V-Cache on CCD%1: checking where the game's threads run.").arg(topo.vcacheCcd));
+
+        etw::KernelTraceOptions opts;
+        opts.ccdOfCpu = topo.ccdOfCpu;
+        m_sampler.start(250);
+
+        if (m_trace.start(opts)) {
             m_timeline.setTraceStart(m_trace.startQpc());
             log(tr("System trace running (%1).").arg(QString::fromStdString(m_trace.sessionDescription())));
             m_traceTimer->start();
         } else {
             log(tr("System trace unavailable: %1. Continuing with frame capture only.")
                     .arg(QString::fromStdString(m_trace.lastError())));
+            m_sampler.stop();
         }
     }
 
@@ -271,9 +313,11 @@ void MainWindow::onCaptureStopped(int exitCode)
     log(tr("PresentMon exited (code %1).").arg(exitCode));
     if (m_trace.isRunning() || m_traceTimer->isActive()) {
         m_traceTimer->stop();
+        m_trace.stop();   // flushes the last CPU buckets
+        m_sampler.stop();
         pumpTrace(true);
-        m_trace.stop();
         logLatencySummary();
+        updateFindings();
     }
     setCapturing(false);
     refresh();
@@ -281,16 +325,29 @@ void MainWindow::onCaptureStopped(int exitCode)
 
 void MainWindow::pumpTrace(bool final)
 {
-    auto events = m_trace.drainEvents();
+    const auto events = m_trace.drainEvents();
+    const auto buckets = m_trace.drainCpuBuckets();
+    const auto samples = m_sampler.drain();
     m_timeline.append(events);
+    m_timeline.appendCpuBuckets(buckets);
+    m_timeline.appendSamples(samples);
     m_timeline.noteCoverage(final ? etw::KernelTrace::qpcNow() : m_trace.lastEventQpc());
 
-    const double settleMs = final ? 0.0 : 1500.0;
-    if (m_session.attributePending(m_timeline, settleMs) > 0) {
+    if (!m_loggedSensors && !samples.empty()) {
+        m_loggedSensors = true;
+        log(tr("Sensors: %1").arg(QString::fromStdString(m_sampler.status())));
+    }
+
+    const double settleMs = final ? 0.0 : kSettleMs;
+    if (m_session.attributePending(m_timeline, settleMs, m_correlatorConfig) > 0) {
         rebuildSpikeTable();
         updateVerdict();
         m_view->update();
     }
+    // CPU buckets are only needed until their spikes are attributed.
+    if (!final)
+        m_timeline.pruneBucketsBefore(m_timeline.coveredUntil() - m_timeline.fromMilliseconds(30'000.0));
+    updateFindings();
 
     // A session that starts fine but delivers nothing is the most likely
     // failure mode on unusual systems; say so instead of failing silently.
@@ -322,6 +379,7 @@ void MainWindow::openCsv()
         auto frames = core::loadPresentMonCsv(path.toStdWString());
         m_session.clear();
         m_timeline.clear();
+        m_findings->clear();
         for (auto& f : frames)
             m_session.append(std::move(f));
     } catch (const std::exception& e) {
@@ -340,6 +398,12 @@ void MainWindow::openCsv()
 
 void MainWindow::onFrames(const std::vector<core::FrameRecord>& frames)
 {
+    if (m_gamePid == 0 && !frames.empty() && frames.front().processId != 0) {
+        m_gamePid = frames.front().processId;
+        m_trace.setTargetProcess(m_gamePid);
+        m_sampler.setTargetProcess(m_gamePid);
+        log(tr("Game process: PID %1").arg(m_gamePid));
+    }
     // Sorting while inserting would move rows around; pause it.
     m_spikeTable->setSortingEnabled(false);
     for (const auto& f : frames) {
@@ -413,6 +477,22 @@ void MainWindow::logLatencySummary()
                 .arg(m.maxUs() / 1000.0, 0, 'f', 2)
                 .arg(m.over1ms));
     }
+}
+
+void MainWindow::updateFindings()
+{
+    const auto latency = m_trace.latencySnapshot();
+    const auto findings = core::sessionFindings(m_timeline, latency.empty() ? nullptr : &latency, m_correlatorConfig);
+    m_findings->clear();
+    for (const auto& f : findings) {
+        auto* item = new QListWidgetItem(QStringLiteral("● %1\n    %2")
+                                             .arg(QString::fromStdString(f.title), QString::fromStdString(f.detail)));
+        item->setForeground(findingColor(f.level));
+        item->setToolTip(QString::fromUtf8(core::toString(f.level).data()));
+        m_findings->addItem(item);
+    }
+    if (findings.empty())
+        m_findings->addItem(tr("No findings yet. Capture with System trace on."));
 }
 
 void MainWindow::refresh()

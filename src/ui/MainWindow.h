@@ -3,7 +3,9 @@
 #include "capture/PresentMonCapture.h"
 #include "core/CaptureSession.h"
 #include "core/EventTimeline.h"
+#include "core/Correlator.h"
 #include "etw/KernelTrace.h"
+#include "win/SystemSampler.h"
 
 #include <QMainWindow>
 
@@ -12,6 +14,7 @@
 class QCheckBox;
 class QLabel;
 class QLineEdit;
+class QListWidget;
 class QPlainTextEdit;
 class QPushButton;
 class QTableWidget;
@@ -42,6 +45,7 @@ private:
     void refresh();
     void updateVerdict();
     void logLatencySummary();
+    void updateFindings();
     void log(const QString& message);
     void setCapturing(bool capturing);
 
@@ -49,11 +53,16 @@ private:
     core::EventTimeline m_timeline;
     capture::PresentMonCapture m_capture;
     etw::KernelTrace m_trace;
+    win::SystemSampler m_sampler;
+    core::CorrelatorConfig m_correlatorConfig;
+    std::uint32_t m_gamePid = 0;
     bool m_warnedNoDpc = false;
+    bool m_loggedSensors = false;
 
     FrameTimeView* m_view = nullptr;
     QTableWidget* m_spikeTable = nullptr;
     QPlainTextEdit* m_log = nullptr;
+    QListWidget* m_findings = nullptr;
     QLineEdit* m_presentMonPath = nullptr;
     QLineEdit* m_processName = nullptr;
     QCheckBox* m_traceCheck = nullptr;

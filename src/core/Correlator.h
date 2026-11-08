@@ -3,38 +3,77 @@
 #include "core/Attribution.h"
 #include "core/EventTimeline.h"
 #include "core/FrameRecord.h"
+#include "core/LatencyStats.h"
 #include "core/SpikeDetector.h"
 
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace framescope::core {
 
 struct CorrelatorConfig {
-    double preWindowMs = 1.0;      // also look this far before the frame interval
+    double preWindowMs = 1.0;        // also look this far before the frame interval
 
-    double dpcMinMs = 0.5;         // ignore DPC/ISR shorter than this as a cause
-    double dpcStrongMs = 2.0;      // a single DPC/ISR this long is a cause on its own
-    double dpcShare = 0.15;        // ... or DPC/ISR time >= this share of the excess
+    double dpcMinMs = 0.5;           // ignore DPC/ISR shorter than this as a cause
+    double dpcStrongMs = 2.0;        // a single DPC/ISR this long is a cause in a stall
+    double dpcShare = 0.15;          // ... or DPC/ISR time >= this share of the excess
 
-    double hardFaultShare = 0.20;  // game hard-fault time >= share of excess
-    double diskShare = 0.30;       // longest disk I/O >= share of excess
+    double hardFaultShare = 0.20;    // game hard-fault time >= share of excess
+    double diskShare = 0.30;         // longest disk I/O >= share of excess
+
+    double lowRamMB = 1500.0;        // "RAM nearly full" below this ...
+    double lowRamShare = 0.05;       // ... or below this share of total RAM
+    double vramFullShare = 0.95;     // game VRAM use >= share of the card's VRAM
+    double cpuPerfLimitPct = 10.0;   // "% Performance Limit" above this = throttled
+
+    double backgroundCores = 4.0;    // other processes used >= this many cores on average
+    double backgroundTopShare = 0.5; // ... and one process was >= this share of it
+
+    double ccdOffShare = 0.40;       // >= this share of game CPU time off the V-Cache CCD
+    int ccdMigrations = 3;           // or this many cross-CCD migrations in the window
+
+    // Turns a PID into a readable name for the evidence text.
+    std::function<std::string(std::uint32_t)> processName;
 };
 
 // Everything the trace saw during one spike window.
 struct WindowEvidence {
+    double windowUs = 0.0;
+
     double maxDpcIsrUs = 0.0;
     EventKind maxDpcIsrKind = EventKind::Dpc;
     std::string maxDpcIsrModule;
-    double sumDpcIsrUs = 0.0;        // clipped to the window
+    double sumDpcIsrUs = 0.0;         // clipped to the window
 
     std::size_t gameHardFaults = 0;
-    double gameHardFaultUs = 0.0;    // clipped to the window
+    double gameHardFaultUs = 0.0;     // clipped to the window
     std::size_t allHardFaults = 0;
 
     double maxGameDiskUs = 0.0;
     double maxAnyDiskUs = 0.0;
+
+    // From periodic samples around the window
+    bool hasSamples = false;
+    std::uint64_t gpuReasons = 0;     // OR of all samples
+    double gpuMinClockMHz = 0.0;
+    double gpuMaxTempC = 0.0;
+    std::optional<double> minAvailableRamMB;
+    std::optional<double> totalRamMB;
+    std::optional<double> maxCpuPerfLimitPct;
+    std::optional<double> maxGameVramMB;
+    std::optional<double> vramTotalMB;
+
+    // From CPU buckets
+    bool hasCpuData = false;
+    std::array<double, kMaxCcds> gameUsByCcd{};
+    int gameCrossCcdMigrations = 0;
+    double backgroundUs = 0.0;
+    std::uint32_t topBackgroundPid = 0;
+    double topBackgroundUs = 0.0;
 };
 
 WindowEvidence gatherEvidence(const EventTimeline& timeline, std::int64_t from, std::int64_t to,
@@ -58,5 +97,18 @@ struct Diagnosis {
 };
 
 Diagnosis diagnose(std::span<const Spike> spikes);
+
+// Whole-session health checks, independent of single spikes.
+struct Finding {
+    enum class Level { Good, Info, Warning, Problem };
+    Level level = Level::Info;
+    std::string title;
+    std::string detail;
+};
+
+std::string_view toString(Finding::Level l) noexcept;
+
+std::vector<Finding> sessionFindings(const EventTimeline& timeline, const LatencyStats* latency,
+                                     const CorrelatorConfig& cfg = {});
 
 } // namespace framescope::core

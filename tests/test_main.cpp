@@ -456,6 +456,189 @@ void latencyStats()
     CHECK(w[1].module == "b.sys" && w[1].isrCount == 1 && w[1].over500us == 1);
 }
 
+// ---------------------------------------------------------------------------
+// M3: samples, CPU buckets, topology, new rules, findings
+// ---------------------------------------------------------------------------
+SystemSample sample(double atMs)
+{
+    SystemSample s;
+    s.qpc = ms2t(atMs);
+    return s;
+}
+
+void timelineSamplesAndBuckets()
+{
+    EventTimeline tl(kFreq);
+    std::vector<SystemSample> ss{sample(0), sample(250), sample(500), sample(750)};
+    tl.appendSamples(ss);
+    auto around = tl.samplesAround(ms2t(300), ms2t(340));
+    CHECK(around.size() == 2); // 250 before, 500 after
+    if (around.size() == 2)
+        CHECK(around[0]->qpc == ms2t(250) && around[1]->qpc == ms2t(500));
+
+    std::vector<CpuBucket> bs;
+    for (int i = 0; i < 10; ++i) {
+        CpuBucket b;
+        b.startQpc = ms2t(i * 10.0);
+        b.endQpc = ms2t(i * 10.0 + 10.0);
+        b.gameUsByCcd[0] = 5000;
+        b.gameUsByCcd[1] = 1000;
+        b.gameCrossCcdMigrations = 1;
+        bs.push_back(b);
+    }
+    tl.appendCpuBuckets(bs);
+    CHECK(tl.bucketsIn(ms2t(25), ms2t(45)).size() == 3); // buckets 20, 30, 40
+    CHECK(near(tl.gameUsByCcdTotal()[0], 50000.0));
+    CHECK(tl.gameCrossCcdMigrationsTotal() == 10);
+    tl.pruneBucketsBefore(ms2t(50));
+    CHECK(tl.bucketsIn(0, ms2t(100)).size() == 6); // bucket ending exactly at 50 ms stays
+    CHECK(near(tl.gameUsByCcdTotal()[0], 50000.0)); // totals survive pruning
+}
+
+void topology()
+{
+    auto t = makeTopology({0, 0, 1, 1}, {98304, 32768}); // 9950X3D-style
+    CHECK(t.hasAsymmetricCache() && t.vcacheCcd == 0 && t.ccdCount() == 2);
+    CHECK(!makeTopology({0, 0}, {98304}).hasAsymmetricCache());          // single CCD
+    CHECK(!makeTopology({0, 1}, {32768, 32768}).hasAsymmetricCache());   // plain dual CCD
+}
+
+void correlateGpuThrottle()
+{
+    Fixture f(Bound::Gpu);
+    auto s = sample(1010);
+    s.gpu = GpuSample{1200, 88, 400, gpu_reason::HwThermal | gpu_reason::SwPowerCap};
+    f.tl.appendSamples(std::span{&s, 1});
+    auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause == Cause::GpuThrottle && a.side == Side::System);
+    CHECK(a.detail.find("HW thermal") != std::string::npos);
+
+    // Power cap alone is normal boost behaviour, not a cause.
+    Fixture g(Bound::Gpu);
+    s.gpu->reasons = gpu_reason::SwPowerCap;
+    g.tl.appendSamples(std::span{&s, 1});
+    CHECK(attribute(g.spike, g.frame, g.tl).cause == Cause::GameGpu);
+}
+
+void correlateMemory()
+{
+    const auto faults = [](Fixture& f) {
+        for (int i = 0; i < 5; ++i)
+            f.add(ev(EventKind::HardFault, 1005 + i * 3, 2.0, 42));
+    };
+    Fixture low;
+    faults(low);
+    auto s = sample(1000);
+    s.availableRamMB = 900;
+    s.totalRamMB = 32768;
+    low.tl.appendSamples(std::span{&s, 1});
+    CHECK(attribute(low.spike, low.frame, low.tl).cause == Cause::LowMemory);
+
+    Fixture plenty;
+    faults(plenty);
+    s.availableRamMB = 20000;
+    plenty.tl.appendSamples(std::span{&s, 1});
+    auto a = attribute(plenty.spike, plenty.frame, plenty.tl);
+    CHECK(a.cause == Cause::Paging && a.side == Side::Game);
+
+    Fixture vram(Bound::Gpu);
+    auto v = sample(1000);
+    v.gameVramMB = 31500;
+    v.vramTotalMB = 32607;
+    vram.tl.appendSamples(std::span{&v, 1});
+    CHECK(attribute(vram.spike, vram.frame, vram.tl).cause == Cause::VramFull);
+}
+
+CpuBucket bucket(double startMs, float ccd0, float ccd1, float background, std::uint32_t topPid, float topUs,
+                 std::uint16_t cross = 0)
+{
+    CpuBucket b;
+    b.startQpc = ms2t(startMs);
+    b.endQpc = ms2t(startMs + 10.0);
+    b.gameUsByCcd[0] = ccd0;
+    b.gameUsByCcd[1] = ccd1;
+    b.backgroundUs = background;
+    b.topBackgroundPid = topPid;
+    b.topBackgroundUs = topUs;
+    b.gameCrossCcdMigrations = cross;
+    return b;
+}
+
+void correlateCpuScheduling()
+{
+    CorrelatorConfig cfg;
+    cfg.processName = [](std::uint32_t pid) { return pid == 777 ? std::string{"MsMpEng.exe"} : std::string{}; };
+
+    // Background: ~6 cores busy with other work, mostly one process.
+    Fixture bg(Bound::Cpu);
+    std::vector<CpuBucket> bs;
+    for (double t = 990; t < 1040; t += 10)
+        bs.push_back(bucket(t, 8000, 0, 60000, 777, 50000));
+    bg.tl.appendCpuBuckets(bs);
+    auto a = attribute(bg.spike, bg.frame, bg.tl, cfg);
+    CHECK(a.cause == Cause::BackgroundLoad);
+    CHECK(a.detail.starts_with("MsMpEng.exe"));
+
+    // CCD: topology with V-Cache on CCD0, game mostly on CCD1.
+    Fixture ccd(Bound::Cpu);
+    ccd.tl.setTopology(makeTopology({0, 0, 1, 1}, {98304, 32768}));
+    bs.clear();
+    for (double t = 990; t < 1040; t += 10)
+        bs.push_back(bucket(t, 2000, 6000, 1000, 0, 0));
+    ccd.tl.appendCpuBuckets(bs);
+    a = attribute(ccd.spike, ccd.frame, ccd.tl, cfg);
+    CHECK(a.cause == Cause::CcdScheduling && a.side == Side::System);
+
+    // Same pattern without asymmetric cache: not a CCD problem.
+    Fixture sym(Bound::Cpu);
+    sym.tl.setTopology(makeTopology({0, 0, 1, 1}, {32768, 32768}));
+    sym.tl.appendCpuBuckets(bs);
+    CHECK(attribute(sym.spike, sym.frame, sym.tl, cfg).cause == Cause::GameCpu);
+
+    // CPU perf limit
+    Fixture lim(Bound::Cpu);
+    auto s = sample(1000);
+    s.cpuPerfLimitPct = 25;
+    lim.tl.appendSamples(std::span{&s, 1});
+    CHECK(attribute(lim.spike, lim.frame, lim.tl).cause == Cause::CpuThrottle);
+}
+
+void findings()
+{
+    EventTimeline tl(kFreq);
+    tl.setTopology(makeTopology({0, 0, 1, 1}, {98304, 32768}));
+    std::vector<CpuBucket> bs{bucket(0, 3000, 7000, 0, 0, 0, 4)};
+    tl.appendCpuBuckets(bs);
+
+    std::vector<SystemSample> ss;
+    for (int i = 0; i < 20; ++i) {
+        auto s = sample(i * 250.0);
+        s.availableRamMB = 12000;
+        s.totalRamMB = 65536;
+        s.gameVramMB = 20000;
+        s.vramTotalMB = 32607;
+        s.gpu = GpuSample{2700, 70, 500, i == 3 ? gpu_reason::HwThermal : gpu_reason::SwPowerCap};
+        ss.push_back(s);
+    }
+    tl.appendSamples(ss);
+
+    LatencyStats lat;
+    lat.add(EventKind::Dpc, "nvlddmkm.sys", 2500);
+
+    const auto f = sessionFindings(tl, &lat);
+    const auto find = [&](std::string_view title) {
+        return std::ranges::find_if(f, [&](const Finding& x) { return x.title == title; });
+    };
+    CHECK(find("Game runs on the wrong CCD") != f.end());   // 30% on V-Cache CCD
+    CHECK(find("High driver latency") != f.end());
+    CHECK(find("GPU throttling") != f.end());               // 1 of 20 samples = 5% -> Warning
+    if (auto it = find("GPU throttling"); it != f.end())
+        CHECK(it->level == Finding::Level::Warning);
+    CHECK(find("Enough free RAM") != f.end());
+    CHECK(find("Enough VRAM") != f.end());
+    CHECK(f.front().level == Finding::Level::Problem);      // sorted worst first
+}
+
 } // namespace
 
 int main()
@@ -481,6 +664,12 @@ int main()
         {"sessionAttributesAfterSettle", sessionAttributesAfterSettle},
         {"diagnosisMix", diagnosisMix},
         {"latencyStats", latencyStats},
+        {"timelineSamplesAndBuckets", timelineSamplesAndBuckets},
+        {"topology", topology},
+        {"correlateGpuThrottle", correlateGpuThrottle},
+        {"correlateMemory", correlateMemory},
+        {"correlateCpuScheduling", correlateCpuScheduling},
+        {"findings", findings},
     };
 
     for (const auto& [name, fn] : tests) {

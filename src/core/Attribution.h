@@ -16,7 +16,13 @@ enum class Side {
 enum class Cause {
     NoTraceData,     // spike happened while no system trace was running
     DriverLatency,   // long DPC/ISR from a driver
-    Paging,          // the game's threads waited on hard page faults
+    GpuThrottle,     // GPU clocks dropped (thermal / power brake / HW slowdown)
+    CpuThrottle,     // CPU clocks capped by the OS/firmware
+    LowMemory,       // hard faults while RAM was nearly full
+    VramFull,        // game at the VRAM limit, the driver is swapping
+    Paging,          // the game's threads waited on hard page faults (RAM was fine)
+    BackgroundLoad,  // another process took a lot of CPU during the frame
+    CcdScheduling,   // game threads on / moving to the CCD without 3D V-Cache
     StorageWait,     // slow disk I/O during the frame
     GameCpu,         // CPU-heavy frame without system interference
     GameGpu,         // GPU-heavy frame without system interference

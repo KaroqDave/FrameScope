@@ -46,6 +46,10 @@ constexpr UCHAR kOpHardFault = 32;
 constexpr UCHAR kOpDiskRead = 10, kOpDiskWrite = 11;
 constexpr UCHAR kOpStart = 1, kOpEnd = 2, kOpDcStart = 3, kOpDcEnd = 4;
 constexpr UCHAR kOpImageLoad = 10, kOpImageUnload = 2;
+constexpr UCHAR kOpCSwitch = 36;
+
+constexpr std::int64_t kBucketsPerSecond = 100;   // 10 ms buckets
+constexpr std::int64_t kBucketFinalizeLag = 200;  // keep buckets open ~2 s for late CPUs
 
 template <typename T>
 T read(const BYTE* data, std::size_t offset)
@@ -149,6 +153,112 @@ struct KernelTrace::Impl {
     std::map<std::uint64_t, Module> modules; // kernel images by base address
     std::uint64_t lastRoutine = 0;
     std::string lastRoutineModule;
+
+    // ---- CPU scheduling (callback thread only, except finishedBuckets)
+    struct CpuState {
+        std::uint32_t tid = 0;
+        std::uint32_t pid = 0;
+        std::int64_t since = 0;
+        bool valid = false;
+    };
+    struct OpenBucket {
+        core::CpuBucket bucket;
+        std::unordered_map<std::uint32_t, double> background;
+    };
+    std::atomic<std::uint32_t> targetPid{0};
+    std::int64_t bucketTicks = 1;
+    std::vector<CpuState> cpus;
+    std::map<std::int64_t, OpenBucket> openBuckets;
+    std::unordered_map<std::uint32_t, std::uint16_t> lastCpuOfThread;
+    std::int64_t maxBucketSeen = 0;
+    std::vector<core::CpuBucket> finishedBuckets; // guarded by mutex
+
+    std::uint8_t ccdOf(std::size_t cpu) const
+    {
+        if (cpu >= opts.ccdOfCpu.size())
+            return 0;
+        return std::min<std::uint8_t>(opts.ccdOfCpu[cpu], core::kMaxCcds - 1);
+    }
+
+    OpenBucket& bucketAt(std::int64_t idx)
+    {
+        auto [it, inserted] = openBuckets.try_emplace(idx);
+        if (inserted) {
+            it->second.bucket.startQpc = idx * bucketTicks;
+            it->second.bucket.endQpc = (idx + 1) * bucketTicks;
+        }
+        maxBucketSeen = std::max(maxBucketSeen, idx);
+        return it->second;
+    }
+
+    void account(const CpuState& st, std::size_t cpu, std::int64_t end)
+    {
+        if (st.tid == 0 || end <= st.since || end - st.since > 10 * freq)
+            return; // idle thread, or a nonsense interval
+        const auto target = targetPid.load(std::memory_order_relaxed);
+        const bool game = target != 0 && st.pid == target;
+        const auto ccd = ccdOf(cpu);
+
+        for (auto idx = st.since / bucketTicks; idx * bucketTicks < end; ++idx) {
+            const auto a = std::max(st.since, idx * bucketTicks);
+            const auto b = std::min(end, (idx + 1) * bucketTicks);
+            const auto us = static_cast<float>(static_cast<double>(b - a) * 1e6 / static_cast<double>(freq));
+            auto& ob = bucketAt(idx);
+            if (game) {
+                ob.bucket.gameUsByCcd[ccd] += us;
+            } else {
+                ob.bucket.backgroundUs += us;
+                ob.background[st.pid] += us;
+            }
+        }
+    }
+
+    void finalize(std::map<std::int64_t, OpenBucket>::iterator it)
+    {
+        auto& ob = it->second;
+        for (const auto& [pid, us] : ob.background) {
+            if (us > ob.bucket.topBackgroundUs) {
+                ob.bucket.topBackgroundUs = static_cast<float>(us);
+                ob.bucket.topBackgroundPid = pid;
+            }
+        }
+        std::lock_guard lock(mutex);
+        finishedBuckets.push_back(ob.bucket);
+    }
+
+    void finalizeOldBuckets(bool all)
+    {
+        while (!openBuckets.empty() &&
+               (all || openBuckets.begin()->first < maxBucketSeen - kBucketFinalizeLag)) {
+            finalize(openBuckets.begin());
+            openBuckets.erase(openBuckets.begin());
+        }
+    }
+
+    void onContextSwitch(std::size_t cpu, std::int64_t ts, std::uint32_t newTid)
+    {
+        if (cpu >= cpus.size())
+            cpus.resize(cpu + 1);
+        auto& st = cpus[cpu];
+        if (st.valid)
+            account(st, cpu, ts);
+
+        const std::uint32_t newPid = newTid == 0 ? 0 : processOf(newTid);
+        const auto target = targetPid.load(std::memory_order_relaxed);
+        if (target != 0 && newPid == target) {
+            const auto c = static_cast<std::uint16_t>(cpu);
+            const auto it = lastCpuOfThread.find(newTid);
+            if (it != lastCpuOfThread.end() && it->second != c) {
+                auto& ob = bucketAt(ts / bucketTicks);
+                ++ob.bucket.gameMigrations;
+                if (ccdOf(it->second) != ccdOf(cpu))
+                    ++ob.bucket.gameCrossCcdMigrations;
+            }
+            lastCpuOfThread[newTid] = c;
+        }
+        st = CpuState{newTid, newPid, ts, true};
+        finalizeOldBuckets(false);
+    }
 
     static void WINAPI callback(PEVENT_RECORD r)
     {
@@ -258,6 +368,12 @@ struct KernelTrace::Impl {
         }
 
         if (IsEqualGUID(g, kThreadGuid)) {
+            if (op == kOpCSwitch) {
+                // NewThreadId (4), OldThreadId (4), priorities/states ...
+                if (len >= 8)
+                    onContextSwitch(GetEventProcessorIndex(&r), ts, read<std::uint32_t>(data, 0));
+                return;
+            }
             // ProcessId (4), TThreadId (4), ...
             if (len < 8)
                 return;
@@ -265,8 +381,10 @@ struct KernelTrace::Impl {
             const auto tid = read<std::uint32_t>(data, 4);
             if (op == kOpStart || op == kOpDcStart)
                 threadToProcess[tid] = pid;
-            else if (op == kOpEnd || op == kOpDcEnd)
+            else if (op == kOpEnd || op == kOpDcEnd) {
                 threadToProcess.erase(tid);
+                lastCpuOfThread.erase(tid);
+            }
             return;
         }
 
@@ -354,13 +472,21 @@ bool KernelTrace::start(const KernelTraceOptions& options)
         m->enableFlags |= EVENT_TRACE_FLAG_MEMORY_HARD_FAULTS;
     if (options.diskIo)
         m->enableFlags |= EVENT_TRACE_FLAG_DISK_IO;
+    if (options.cpuScheduling)
+        m->enableFlags |= EVENT_TRACE_FLAG_CSWITCH;
 
     {
         std::lock_guard lock(m->mutex);
         m->pending.clear();
         m->stats.clear();
         m->error.clear();
+        m->finishedBuckets.clear();
     }
+    m->bucketTicks = std::max<std::int64_t>(1, m->freq / kBucketsPerSecond);
+    m->cpus.clear();
+    m->openBuckets.clear();
+    m->lastCpuOfThread.clear();
+    m->maxBucketSeen = 0;
     m->threadToProcess.clear();
     m->modules.clear();
     m->lastRoutine = 0;
@@ -407,6 +533,7 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     m->running = true;
     m->worker = std::thread([impl = m.get()] {
         ProcessTrace(&impl->consumer, 1, nullptr, nullptr); // blocks until the session stops
+        impl->finalizeOldBuckets(true);
         impl->running = false;
     });
     return true;
@@ -431,6 +558,17 @@ std::vector<core::SystemEvent> KernelTrace::drainEvents()
 {
     std::lock_guard lock(m->mutex);
     return std::exchange(m->pending, {});
+}
+
+std::vector<core::CpuBucket> KernelTrace::drainCpuBuckets()
+{
+    std::lock_guard lock(m->mutex);
+    return std::exchange(m->finishedBuckets, {});
+}
+
+void KernelTrace::setTargetProcess(std::uint32_t pid) noexcept
+{
+    m->targetPid = pid;
 }
 
 std::int64_t KernelTrace::startQpc() const noexcept { return m->startQpc; }
@@ -479,6 +617,8 @@ bool KernelTrace::start(const KernelTraceOptions&) { return false; }
 void KernelTrace::stop() {}
 bool KernelTrace::isRunning() const noexcept { return false; }
 std::vector<core::SystemEvent> KernelTrace::drainEvents() { return {}; }
+std::vector<core::CpuBucket> KernelTrace::drainCpuBuckets() { return {}; }
+void KernelTrace::setTargetProcess(std::uint32_t) noexcept {}
 std::int64_t KernelTrace::startQpc() const noexcept { return 0; }
 std::int64_t KernelTrace::lastEventQpc() const noexcept { return 0; }
 std::uint64_t KernelTrace::dpcIsrCount() const noexcept { return 0; }

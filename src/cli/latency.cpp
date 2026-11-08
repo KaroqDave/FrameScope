@@ -5,6 +5,7 @@
 // Run it as administrator while the PC is idle, and again while gaming.
 
 #include "etw/KernelTrace.h"
+#include "win/SystemSampler.h"
 
 #include <algorithm>
 #include <atomic>
@@ -70,6 +71,19 @@ int main(int argc, char** argv)
     SetConsoleCtrlHandler(onCtrl, TRUE);
 #endif
 
+    const auto topo = win::queryCpuTopology();
+    if (topo.ccdCount() > 0) {
+        std::string l3;
+        for (const auto kb : topo.l3KBOfCcd)
+            l3 += std::format("{}{} MB", l3.empty() ? "" : " / ", kb / 1024);
+        out("CPU: {} logical CPUs, {} L3 group(s): {}{}", topo.ccdOfCpu.size(), topo.ccdCount(), l3,
+            topo.hasAsymmetricCache() ? std::format(", 3D V-Cache on CCD{}", topo.vcacheCcd) : std::string{});
+    }
+    opts.ccdOfCpu = topo.ccdOfCpu;
+
+    win::SystemSampler sampler;
+    sampler.start(500);
+
     etw::KernelTrace trace;
     if (!trace.start(opts)) {
         out("Could not start kernel trace: {}", trace.lastError());
@@ -77,7 +91,7 @@ int main(int argc, char** argv)
     }
     out("Tracing for {} s using {} (Ctrl+C to stop early) ...", seconds, trace.sessionDescription());
 
-    std::size_t hardFaults = 0, diskIos = 0, longEvents = 0;
+    std::size_t hardFaults = 0, diskIos = 0, longEvents = 0, cpuBuckets = 0;
     for (int s = 0; s < seconds && !g_stop; ++s) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         for (const auto& e : trace.drainEvents()) {
@@ -87,6 +101,7 @@ int main(int argc, char** argv)
             default:                         ++longEvents; break;
             }
         }
+        cpuBuckets += trace.drainCpuBuckets().size();
         std::fprintf(stdout, "\r  %3d s  %10llu DPC/ISR", s + 1,
                      static_cast<unsigned long long>(trace.dpcIsrCount()));
         std::fflush(stdout);
@@ -95,6 +110,23 @@ int main(int argc, char** argv)
 
     const auto stats = trace.latencySnapshot();
     trace.stop();
+    cpuBuckets += trace.drainCpuBuckets().size();
+    const auto samples = sampler.drain();
+    out("Sensors: {}", sampler.status());
+    sampler.stop();
+    if (!samples.empty()) {
+        const auto& s = samples.back();
+        std::string line = "Last sample:";
+        if (s.availableRamMB && s.totalRamMB)
+            line += std::format(" RAM {:.1f}/{:.1f} GB free", *s.availableRamMB / 1024, *s.totalRamMB / 1024);
+        if (s.cpuPerfLimitPct)
+            line += std::format(", CPU perf limit {:.0f}%", *s.cpuPerfLimitPct);
+        if (s.gpu)
+            line += std::format(", GPU {:.0f} MHz {:.0f} °C {:.0f} W reasons 0x{:x}", s.gpu->coreClockMHz,
+                                s.gpu->temperatureC, s.gpu->powerW, s.gpu->reasons);
+        out("{}", line);
+    }
+    out("CPU scheduling buckets: {} (expect ~100 per second)", cpuBuckets);
 
     if (trace.dpcIsrCount() == 0) {
         out("No DPC/ISR events received. The session started but delivered nothing;");

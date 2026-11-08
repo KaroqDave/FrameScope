@@ -2,6 +2,7 @@
 
 #include "core/LatencyStats.h"
 #include "core/SystemEvent.h"
+#include "core/SystemSample.h"
 
 #include <cstdint>
 #include <memory>
@@ -21,6 +22,11 @@ struct KernelTraceOptions {
     // logger session. Only one tool at a time can own it (LatencyMon, xperf ...),
     // so it's the fallback, not the default.
     bool forceNtKernelLogger = false;
+
+    // Context switches -> per-10 ms CPU buckets (game time per CCD,
+    // migrations, background load). Highest-volume event; can be turned off.
+    bool cpuScheduling = true;
+    std::vector<std::uint8_t> ccdOfCpu; // from CpuTopology; empty = single CCD
 };
 
 // Real-time ETW kernel trace: DPC/ISR (resolved to driver names), hard page
@@ -46,6 +52,13 @@ public:
 
     // Thread-safe. Moves out events collected since the last call.
     std::vector<core::SystemEvent> drainEvents();
+
+    // Thread-safe. Finished 10 ms CPU buckets. They lag ~2 s behind real time,
+    // because per-CPU ETW buffers arrive out of order.
+    std::vector<core::CpuBucket> drainCpuBuckets();
+
+    // The game's PID, so its threads can be told apart. Set it once known.
+    void setTargetProcess(std::uint32_t pid) noexcept;
 
     [[nodiscard]] std::int64_t startQpc() const noexcept;
     [[nodiscard]] std::int64_t lastEventQpc() const noexcept; // trace coverage
