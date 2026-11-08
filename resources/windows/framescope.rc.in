@@ -1,0 +1,4 @@
+// MinGW: embed the manifest (MSVC adds framescope.manifest directly).
+// 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST
+// Configured by CMake so windres gets an absolute path.
+1 24 "@FRAMESCOPE_MANIFEST_PATH@"
