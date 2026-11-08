@@ -15,7 +15,7 @@ jobs:
     name: Linux (GCC, Qt 6)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build
@@ -33,7 +33,7 @@ jobs:
     name: Windows (MSVC, Qt 6)
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -45,14 +45,33 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      # Errors are repeated as annotations so they show up on the commit's checks.
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object configure.log
+          if ($LASTEXITCODE) {
+            Select-String -Path configure.log -Pattern 'Error|error' | Select-Object -First 15 | ForEach-Object { "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Build
-        run: cmake --build build
+        shell: pwsh
+        run: |
+          cmake --build build -- -k 0 2>&1 | Tee-Object build.log
+          if ($LASTEXITCODE) {
+            Select-String -Path build.log -Pattern ': error |: fatal error |FAILED:' | Select-Object -First 25 | ForEach-Object { "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        shell: pwsh
+        run: |
+          ctest --test-dir build --output-on-failure 2>&1 | Tee-Object test.log
+          if ($LASTEXITCODE) {
+            Select-String -Path test.log -Pattern 'FAIL' | Select-Object -First 25 | ForEach-Object { "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Package
         shell: pwsh
