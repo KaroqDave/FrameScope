@@ -3,6 +3,7 @@
 #include "core/PresentMonCsvParser.h"
 #include "ui/FrameTimeView.h"
 
+#include <QCheckBox>
 #include <QDateTime>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -27,8 +28,9 @@ namespace {
 
 constexpr auto kKeyPresentMon = "capture/presentMonPath";
 constexpr auto kKeyProcess = "capture/processName";
+constexpr auto kKeyTrace = "capture/systemTrace";
 
-enum SpikeColumn { ColTime, ColFrame, ColMedian, ColExcess, ColBound, ColCount };
+enum SpikeColumn { ColTime, ColFrame, ColExcess, ColBound, ColSide, ColCause, ColConfidence, ColDetail, ColCount };
 
 QTableWidgetItem* numberItem(double value, int decimals)
 {
@@ -39,29 +41,44 @@ QTableWidgetItem* numberItem(double value, int decimals)
     return item;
 }
 
+QTableWidgetItem* textItem(std::string_view text)
+{
+    return new QTableWidgetItem(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+}
+
+QColor sideColor(core::Side side)
+{
+    switch (side) {
+    case core::Side::System:  return {0xff, 0x52, 0x52, 70};
+    case core::Side::Game:    return {0x7c, 0x83, 0xff, 70};
+    case core::Side::Mixed:   return {0xff, 0xb3, 0x00, 70};
+    case core::Side::Unknown: break;
+    }
+    return {};
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
+    , m_timeline(etw::KernelTrace::qpcFrequency())
 {
     buildUi();
 
     QSettings settings;
     m_presentMonPath->setText(settings.value(kKeyPresentMon).toString());
     m_processName->setText(settings.value(kKeyProcess).toString());
+    m_traceCheck->setChecked(etw::KernelTrace::isSupported() && settings.value(kKeyTrace, true).toBool());
 
     connect(&m_capture, &capture::PresentMonCapture::framesCaptured, this, &MainWindow::onFrames);
     connect(&m_capture, &capture::PresentMonCapture::logMessage, this, &MainWindow::log);
     connect(&m_capture, &capture::PresentMonCapture::started, this, [this] {
         log(tr("Capture started. Waiting for frames from %1 …").arg(m_processName->text()));
     });
-    connect(&m_capture, &capture::PresentMonCapture::stopped, this, [this](int code) {
-        log(tr("PresentMon exited (code %1).").arg(code));
-        setCapturing(false);
-        refresh();
-    });
+    connect(&m_capture, &capture::PresentMonCapture::stopped, this, &MainWindow::onCaptureStopped);
     connect(&m_capture, &capture::PresentMonCapture::failed, this, [this](const QString& msg) {
         log(msg);
+        m_trace.stop();
         setCapturing(false);
         QMessageBox::warning(this, tr("Capture failed"), msg);
     });
@@ -75,6 +92,11 @@ MainWindow::MainWindow(QWidget* parent)
     });
     m_refreshTimer->start();
 
+    // Pull ETW events and attribute settled spikes once a second.
+    m_traceTimer = new QTimer(this);
+    m_traceTimer->setInterval(1000);
+    connect(m_traceTimer, &QTimer::timeout, this, [this] { pumpTrace(false); });
+
     setCapturing(false);
     refresh();
 }
@@ -84,13 +106,15 @@ MainWindow::~MainWindow()
     QSettings settings;
     settings.setValue(kKeyPresentMon, m_presentMonPath->text());
     settings.setValue(kKeyProcess, m_processName->text());
+    settings.setValue(kKeyTrace, m_traceCheck->isChecked());
     m_capture.stop();
+    m_trace.stop();
 }
 
 void MainWindow::buildUi()
 {
     setWindowTitle(tr("FrameScope"));
-    resize(1200, 760);
+    resize(1280, 800);
 
     // ---- Capture controls
     m_presentMonPath = new QLineEdit;
@@ -105,6 +129,13 @@ void MainWindow::buildUi()
     m_processName = new QLineEdit;
     m_processName->setPlaceholderText(tr("Game executable, e.g. cod.exe"));
 
+    m_traceCheck = new QCheckBox(tr("System trace"));
+    m_traceCheck->setToolTip(etw::KernelTrace::isSupported()
+                                 ? tr("Record driver latency (DPC/ISR), hard page faults and disk I/O "
+                                      "to find out what caused each spike.")
+                                 : tr("Only available on Windows."));
+    m_traceCheck->setEnabled(etw::KernelTrace::isSupported());
+
     m_startButton = new QPushButton(tr("Start capture"));
     m_stopButton = new QPushButton(tr("Stop"));
     m_openButton = new QPushButton(tr("Open CSV…"));
@@ -115,6 +146,7 @@ void MainWindow::buildUi()
 
     auto* buttonRow = new QHBoxLayout;
     buttonRow->addWidget(m_processName, 1);
+    buttonRow->addWidget(m_traceCheck);
     buttonRow->addWidget(m_startButton);
     buttonRow->addWidget(m_stopButton);
     buttonRow->addSpacing(16);
@@ -124,23 +156,32 @@ void MainWindow::buildUi()
     form->addRow(tr("PresentMon:"), pathRow);
     form->addRow(tr("Process:"), buttonRow);
 
+    // ---- Verdict
+    m_verdictLabel = new QLabel;
+    m_verdictLabel->setWordWrap(true);
+    QFont vf = m_verdictLabel->font();
+    vf.setPointSizeF(vf.pointSizeF() * 1.15);
+    vf.setBold(true);
+    m_verdictLabel->setFont(vf);
+
     // ---- Graph
     m_view = new FrameTimeView;
     m_view->setSession(&m_session);
 
     // ---- Spike table
     m_spikeTable = new QTableWidget(0, ColCount);
-    m_spikeTable->setHorizontalHeaderLabels(
-        {tr("Time (s)"), tr("Frame (ms)"), tr("Median (ms)"), tr("Excess (ms)"), tr("Bound")});
-    m_spikeTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_spikeTable->setHorizontalHeaderLabels({tr("Time (s)"), tr("Frame (ms)"), tr("Excess (ms)"), tr("Bound"),
+                                             tr("Side"), tr("Cause"), tr("Conf."), tr("Evidence")});
+    auto* header = m_spikeTable->horizontalHeader();
+    header->setSectionResizeMode(QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(ColDetail, QHeaderView::Stretch);
     m_spikeTable->verticalHeader()->setVisible(false);
     m_spikeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_spikeTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_spikeTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_spikeTable->setSortingEnabled(true);
     m_spikeTable->setToolTip(tr("Bound: which side was busy in the spike frame.\n"
-                                "Stall = neither CPU nor GPU was busy — waiting on "
-                                "I/O, paging, drivers or sync."));
+                                "Side/Cause appear ~2 s after a spike, once the system trace has covered it."));
     connect(m_spikeTable, &QTableWidget::itemSelectionChanged, this, [this] {
         const auto rows = m_spikeTable->selectionModel()->selectedRows(ColTime);
         if (!rows.isEmpty())
@@ -156,7 +197,7 @@ void MainWindow::buildUi()
     bottom->addWidget(m_spikeTable);
     bottom->addWidget(m_log);
     bottom->setStretchFactor(0, 3);
-    bottom->setStretchFactor(1, 2);
+    bottom->setStretchFactor(1, 1);
 
     auto* main = new QSplitter(Qt::Vertical);
     main->addWidget(m_view);
@@ -167,6 +208,7 @@ void MainWindow::buildUi()
     auto* central = new QWidget;
     auto* layout = new QVBoxLayout(central);
     layout->addLayout(form);
+    layout->addWidget(m_verdictLabel);
     layout->addWidget(main, 1);
     setCentralWidget(central);
 
@@ -181,6 +223,7 @@ void MainWindow::setCapturing(bool capturing)
     m_openButton->setEnabled(!capturing);
     m_presentMonPath->setEnabled(!capturing);
     m_processName->setEnabled(!capturing);
+    m_traceCheck->setEnabled(!capturing && etw::KernelTrace::isSupported());
 }
 
 void MainWindow::startCapture()
@@ -189,22 +232,74 @@ void MainWindow::startCapture()
         return;
 
     m_session.clear();
+    m_timeline.clear();
     m_spikeTable->setRowCount(0);
     m_view->setFollow(true);
     m_view->setSpanSeconds(30.0);
+    m_warnedNoDpc = false;
     setCapturing(true);
+
+    // Start the system trace first so it covers the very first frames.
+    if (m_traceCheck->isChecked()) {
+        if (m_trace.start()) {
+            m_timeline.setTraceStart(m_trace.startQpc());
+            log(tr("System trace running (%1).").arg(QString::fromStdString(m_trace.sessionDescription())));
+            m_traceTimer->start();
+        } else {
+            log(tr("System trace unavailable: %1. Continuing with frame capture only.")
+                    .arg(QString::fromStdString(m_trace.lastError())));
+        }
+    }
 
     m_capture.start({
         .presentMonPath = m_presentMonPath->text().trimmed(),
         .processName = m_processName->text().trimmed(),
         .extraArgs = {},
+        .qpcFrequency = etw::KernelTrace::qpcFrequency(),
     });
+    updateVerdict();
 }
 
 void MainWindow::stopCapture()
 {
     log(tr("Stopping capture …"));
-    m_capture.stop();
+    m_capture.stop(); // emits stopped() -> onCaptureStopped()
+}
+
+void MainWindow::onCaptureStopped(int exitCode)
+{
+    log(tr("PresentMon exited (code %1).").arg(exitCode));
+    if (m_trace.isRunning() || m_traceTimer->isActive()) {
+        m_traceTimer->stop();
+        pumpTrace(true);
+        m_trace.stop();
+        logLatencySummary();
+    }
+    setCapturing(false);
+    refresh();
+}
+
+void MainWindow::pumpTrace(bool final)
+{
+    auto events = m_trace.drainEvents();
+    m_timeline.append(events);
+    m_timeline.noteCoverage(final ? etw::KernelTrace::qpcNow() : m_trace.lastEventQpc());
+
+    const double settleMs = final ? 0.0 : 1500.0;
+    if (m_session.attributePending(m_timeline, settleMs) > 0) {
+        rebuildSpikeTable();
+        updateVerdict();
+        m_view->update();
+    }
+
+    // A session that starts fine but delivers nothing is the most likely
+    // failure mode on unusual systems; say so instead of failing silently.
+    const auto runningFor = m_timeline.toMicroseconds(etw::KernelTrace::qpcNow() - m_trace.startQpc());
+    if (!m_warnedNoDpc && !final && runningFor > 3e6 && m_trace.dpcIsrCount() == 0) {
+        m_warnedNoDpc = true;
+        log(tr("Warning: the system trace delivers no DPC/ISR events. "
+               "Run framescope-latency --nt-kernel-logger to check."));
+    }
 }
 
 void MainWindow::browsePresentMon()
@@ -226,6 +321,7 @@ void MainWindow::openCsv()
     try {
         auto frames = core::loadPresentMonCsv(path.toStdWString());
         m_session.clear();
+        m_timeline.clear();
         for (auto& f : frames)
             m_session.append(std::move(f));
     } catch (const std::exception& e) {
@@ -235,7 +331,10 @@ void MainWindow::openCsv()
 
     rebuildSpikeTable();
     m_view->showAll();
-    log(tr("Loaded %1 frames from %2").arg(m_session.frames().size()).arg(path));
+    log(tr("Loaded %1 frames from %2 (no system trace: causes need a live capture)")
+            .arg(m_session.frames().size())
+            .arg(path));
+    updateVerdict();
     refresh();
 }
 
@@ -257,10 +356,23 @@ void MainWindow::appendSpikeRow(const core::Spike& s)
     m_spikeTable->insertRow(row);
     m_spikeTable->setItem(row, ColTime, numberItem(s.timeSeconds, 2));
     m_spikeTable->setItem(row, ColFrame, numberItem(s.frameTimeMs, 1));
-    m_spikeTable->setItem(row, ColMedian, numberItem(s.medianMs, 1));
     m_spikeTable->setItem(row, ColExcess, numberItem(s.excessMs(), 1));
-    m_spikeTable->setItem(row, ColBound,
-                          new QTableWidgetItem(QString::fromUtf8(core::toString(s.bound).data())));
+    m_spikeTable->setItem(row, ColBound, textItem(core::toString(s.bound)));
+
+    if (!s.attribution) {
+        for (int c : {ColSide, ColCause, ColConfidence, ColDetail})
+            m_spikeTable->setItem(row, c, textItem(c == ColSide && m_trace.isRunning() ? "…" : "—"));
+        return;
+    }
+    const auto& a = *s.attribution;
+    auto* side = textItem(core::toString(a.side));
+    side->setBackground(sideColor(a.side));
+    m_spikeTable->setItem(row, ColSide, side);
+    m_spikeTable->setItem(row, ColCause, textItem(core::toString(a.cause)));
+    auto* conf = numberItem(a.confidence * 100.0, 0);
+    conf->setData(Qt::DisplayRole, QStringLiteral("%1%").arg(qRound(a.confidence * 100.0)));
+    m_spikeTable->setItem(row, ColConfidence, conf);
+    m_spikeTable->setItem(row, ColDetail, textItem(a.detail));
 }
 
 void MainWindow::rebuildSpikeTable()
@@ -270,6 +382,37 @@ void MainWindow::rebuildSpikeTable()
     for (const auto& s : m_session.spikes())
         appendSpikeRow(s);
     m_spikeTable->setSortingEnabled(true);
+}
+
+void MainWindow::updateVerdict()
+{
+    if (m_session.spikes().empty()) {
+        m_verdictLabel->setText(m_capture.isRunning() ? tr("Capturing … no stutter so far.") : QString{});
+        return;
+    }
+    const auto d = m_session.diagnosis();
+    if (d.attributed == 0) {
+        m_verdictLabel->setText(m_trace.isRunning()
+                                    ? tr("%1 spikes, waiting for system trace data …").arg(m_session.spikes().size())
+                                    : tr("%1 spikes. Capture live with System trace on to find their causes.")
+                                          .arg(m_session.spikes().size()));
+        return;
+    }
+    m_verdictLabel->setText(tr("Verdict: %1").arg(QString::fromStdString(d.verdict)));
+}
+
+void MainWindow::logLatencySummary()
+{
+    const auto worst = m_trace.latencySnapshot().worst(5);
+    if (worst.empty())
+        return;
+    log(tr("Worst drivers by single DPC/ISR:"));
+    for (const auto& m : worst) {
+        log(QStringLiteral("  %1: max %2 ms, %3× over 1 ms")
+                .arg(QString::fromStdString(m.module))
+                .arg(m.maxUs() / 1000.0, 0, 'f', 2)
+                .arg(m.over1ms));
+    }
 }
 
 void MainWindow::refresh()
@@ -283,6 +426,9 @@ void MainWindow::refresh()
     if (m_capture.isRunning() && now - lastStats < 500)
         return;
     lastStats = now;
+
+    if (m_capture.isRunning())
+        updateVerdict();
 
     const auto s = m_session.stats();
     if (s.frames == 0) {

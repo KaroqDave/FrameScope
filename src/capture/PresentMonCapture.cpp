@@ -6,6 +6,7 @@ namespace framescope::capture {
 namespace flags {
 constexpr auto processName = "--process_name";
 constexpr auto outputStdout = "--output_stdout";
+constexpr auto qpcTime = "--qpc_time";                     // raw QPC times -> match ETW events
 constexpr auto sessionName = "--session_name";
 constexpr auto stopExisting = "--stop_existing_session";      // take over a stale session
 constexpr auto terminateExisting = "--terminate_existing_session"; // stop a session, then exit
@@ -47,12 +48,14 @@ void PresentMonCapture::start(const Options& options)
     }
 
     m_parser.reset();
+    m_parser.setQpcFrequency(options.qpcFrequency);
     m_lineBuffer.clear();
     m_presentMonPath = options.presentMonPath;
 
     QStringList args{
         flags::processName, options.processName,
         flags::outputStdout,
+        flags::qpcTime,
         flags::sessionName, kSessionName,
         flags::stopExisting,
     };

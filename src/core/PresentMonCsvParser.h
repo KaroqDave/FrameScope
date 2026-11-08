@@ -27,9 +27,15 @@ public:
     // Returns a frame if the line was a valid data row of the tracked swap chain.
     std::optional<FrameRecord> feedLine(std::string_view line);
 
+    // Clears all state except the QPC frequency.
     void reset();
 
+    // Ticks per second of QueryPerformanceCounter. 10 MHz on Windows 10/11
+    // in practice; set it from QueryPerformanceFrequency to be exact.
+    void setQpcFrequency(std::int64_t ticksPerSecond) noexcept { m_qpcFrequency = ticksPerSecond; }
+
     [[nodiscard]] bool hasHeader() const noexcept { return m_frameTimeCol >= 0; }
+    [[nodiscard]] bool hasQpcTimes() const noexcept { return m_qpcCol >= 0; }
     [[nodiscard]] std::size_t skippedRows() const noexcept { return m_skippedRows; }
     [[nodiscard]] const std::string& lockedSwapChain() const noexcept { return m_lockedKey; }
 
@@ -44,6 +50,11 @@ private:
     int m_swapChainCol = -1;
     int m_frameTypeCol = -1;
     int m_requiredColumns = 0;
+
+    int m_qpcCol = -1;
+    bool m_qpcIsFrameEnd = false;   // v1 "QPCTime" = present time = frame end
+    bool m_qpcHeuristic = false;    // "CPUStartTime" that may hold raw ticks
+    std::int64_t m_qpcFrequency = 10'000'000;
 
     std::string m_lockedKey;
     double m_elapsedMs = 0.0;

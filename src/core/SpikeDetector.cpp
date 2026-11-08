@@ -71,6 +71,7 @@ std::optional<Spike> SpikeDetector::push(const FrameRecord& frame)
                 .frameTimeMs = ft,
                 .medianMs = median,
                 .bound = classify(frame),
+                .attribution = std::nullopt,
             };
         }
     }

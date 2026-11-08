@@ -50,6 +50,15 @@ std::optional<double> toDouble(std::string_view s)
     return value;
 }
 
+std::optional<std::int64_t> toInt64(std::string_view s)
+{
+    std::int64_t value = 0;
+    const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), value);
+    if (s.empty() || ec != std::errc{} || ptr != s.data() + s.size())
+        return std::nullopt;
+    return value;
+}
+
 int findColumn(const std::vector<std::string_view>& cols,
                std::initializer_list<std::string_view> names)
 {
@@ -70,7 +79,9 @@ std::string_view column(const std::vector<std::string_view>& cols, int idx)
 
 void PresentMonCsvParser::reset()
 {
+    const auto freq = m_qpcFrequency;
     *this = PresentMonCsvParser{};
+    m_qpcFrequency = freq;
 }
 
 bool PresentMonCsvParser::parseHeader(std::string_view line)
@@ -88,6 +99,21 @@ bool PresentMonCsvParser::parseHeader(std::string_view line)
     m_appCol = findColumn(cols, {"Application"});
     m_swapChainCol = findColumn(cols, {"SwapChainAddress"});
     m_frameTypeCol = findColumn(cols, {"FrameType"});
+
+    // QPC time column (PresentMon --qpc_time). Names differ between versions.
+    m_qpcCol = -1;
+    m_qpcIsFrameEnd = false;
+    m_qpcHeuristic = false;
+    if (const int c = findColumn(cols, {"CPUStartQPC"}); c >= 0) {
+        m_qpcCol = c;
+    } else if (const int v1 = findColumn(cols, {"QPCTime"}); v1 >= 0) {
+        m_qpcCol = v1;
+        m_qpcIsFrameEnd = true;
+    } else if (const int t = findColumn(cols, {"CPUStartTime"}); t >= 0) {
+        // Some versions keep the name and just switch the unit to ticks.
+        m_qpcCol = t;
+        m_qpcHeuristic = true;
+    }
 
     m_requiredColumns = 1 + std::max({m_frameTimeCol, m_pidCol, m_swapChainCol});
     return true;
@@ -141,6 +167,14 @@ std::optional<FrameRecord> PresentMonCsvParser::feedLine(std::string_view line)
     rec.frameTimeMs = *frameTime;
     rec.cpuBusyMs = toDouble(column(cols, m_cpuBusyCol));
     rec.gpuBusyMs = toDouble(column(cols, m_gpuBusyCol));
+    if (const auto qpc = toInt64(column(cols, m_qpcCol))) {
+        // Seconds-since-start fit easily below 1e7; raw QPC ticks never do.
+        if (!m_qpcHeuristic || *qpc > 10'000'000) {
+            const auto ticks = static_cast<std::int64_t>(*frameTime * static_cast<double>(m_qpcFrequency) / 1000.0);
+            rec.qpcStart = m_qpcIsFrameEnd ? *qpc - ticks : *qpc;
+            rec.qpcEnd = *rec.qpcStart + ticks;
+        }
+    }
     if (const auto pid = toDouble(column(cols, m_pidCol)))
         rec.processId = static_cast<std::uint32_t>(*pid);
     rec.application = std::string{column(cols, m_appCol)};

@@ -25,7 +25,24 @@ const QColor kBackground{0x1b, 0x1d, 0x22};
 const QColor kGrid{0x33, 0x37, 0x40};
 const QColor kText{0xa0, 0xa6, 0xb2};
 const QColor kLine{0x4f, 0xc3, 0xf7};
-const QColor kSpike{0xff, 0x52, 0x52};
+const QColor kSpikeSystem{0xff, 0x52, 0x52};
+const QColor kSpikeGame{0x9c, 0xa3, 0xff};
+const QColor kSpikeMixed{0xff, 0xb3, 0x00};
+const QColor kSpikePending{0xe0, 0xe0, 0xe0};
+
+// Red = your PC, violet = the game, amber = could be either.
+QColor spikeColor(const core::Spike& s)
+{
+    if (!s.attribution)
+        return kSpikePending;
+    switch (s.attribution->side) {
+    case core::Side::System:  return kSpikeSystem;
+    case core::Side::Game:    return kSpikeGame;
+    case core::Side::Mixed:   return kSpikeMixed;
+    case core::Side::Unknown: break;
+    }
+    return kSpikePending;
+}
 
 double niceTimeStep(double span)
 {
@@ -193,9 +210,10 @@ void FrameTimeView::paintEvent(QPaintEvent*)
     const auto spikeByTime = [](const core::Spike& s, double t) { return s.timeSeconds < t; };
     auto sIt = std::lower_bound(spikes.begin(), spikes.end(), tStart, spikeByTime);
     p.setPen(Qt::NoPen);
-    p.setBrush(kSpike);
-    for (; sIt != spikes.end() && sIt->timeSeconds <= tEnd; ++sIt)
+    for (; sIt != spikes.end() && sIt->timeSeconds <= tEnd; ++sIt) {
+        p.setBrush(spikeColor(*sIt));
         p.drawEllipse(QPointF(xOf(sIt->timeSeconds), yOf(sIt->frameTimeMs)), 3.5, 3.5);
+    }
 
     p.setClipping(false);
     p.setPen(kGrid);

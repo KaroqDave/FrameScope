@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Attribution.h"
 #include "core/FrameRecord.h"
 
 #include <cstddef>
@@ -34,6 +35,9 @@ struct Spike {
     double frameTimeMs = 0.0;
     double medianMs = 0.0;
     Bound bound = Bound::Unknown;
+
+    // Filled in later by the correlator, once the trace has covered the frame.
+    std::optional<Attribution> attribution;
 
     [[nodiscard]] double excessMs() const noexcept { return frameTimeMs - medianMs; }
 };

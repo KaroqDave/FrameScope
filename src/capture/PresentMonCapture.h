@@ -9,6 +9,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <cstdint>
 #include <vector>
 
 namespace framescope::capture {
@@ -26,6 +27,7 @@ public:
         QString presentMonPath;   // full path to PresentMon-x.y.z-x64.exe
         QString processName;      // e.g. "cod.exe"
         QStringList extraArgs;    // passed through unchanged
+        std::int64_t qpcFrequency = 10'000'000; // QueryPerformanceFrequency
     };
 
     static constexpr auto kSessionName = "FrameScope";

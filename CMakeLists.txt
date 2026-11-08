@@ -33,8 +33,29 @@ add_library(framescope_core STATIC
     src/core/SessionStats.cpp
     src/core/CaptureSession.h
     src/core/CaptureSession.cpp
+    src/core/SystemEvent.h
+    src/core/EventTimeline.h
+    src/core/EventTimeline.cpp
+    src/core/Attribution.h
+    src/core/Correlator.h
+    src/core/Correlator.cpp
+    src/core/LatencyStats.h
+    src/core/LatencyStats.cpp
 )
 target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# ---------------------------------------------------------------------------
+# ETW kernel trace (Windows; a stub elsewhere so everything still builds).
+# ---------------------------------------------------------------------------
+add_library(framescope_etw STATIC
+    src/etw/KernelTrace.h
+    src/etw/KernelTrace.cpp
+)
+target_link_libraries(framescope_etw PUBLIC framescope_core)
+if(WIN32)
+    target_link_libraries(framescope_etw PRIVATE advapi32)
+    target_compile_definitions(framescope_etw PRIVATE UNICODE _UNICODE)
+endif()
 
 # ---------------------------------------------------------------------------
 # CLI: analyse an existing PresentMon CSV offline.
@@ -42,6 +63,12 @@ target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sr
 if(FRAMESCOPE_BUILD_CLI)
     add_executable(framescope-cli src/cli/main.cpp)
     target_link_libraries(framescope-cli PRIVATE framescope_core)
+
+    # System latency check (DPC/ISR per driver), Windows only.
+    if(WIN32)
+        add_executable(framescope-latency src/cli/latency.cpp)
+        target_link_libraries(framescope-latency PRIVATE framescope_etw)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -76,7 +103,7 @@ if(FRAMESCOPE_BUILD_GUI)
     endif()
 
     qt_add_executable(framescope WIN32 ${FRAMESCOPE_GUI_SOURCES})
-    target_link_libraries(framescope PRIVATE framescope_core Qt6::Widgets)
+    target_link_libraries(framescope PRIVATE framescope_core framescope_etw Qt6::Widgets)
 endif()
 
 # ---------------------------------------------------------------------------

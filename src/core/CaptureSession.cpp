@@ -23,6 +23,26 @@ void CaptureSession::clear()
     m_spikes.clear();
 }
 
+std::size_t CaptureSession::attributePending(const EventTimeline& timeline, double settleMs,
+                                             const CorrelatorConfig& cfg)
+{
+    if (!timeline.traceStart())
+        return 0;
+
+    const auto settled = timeline.coveredUntil() - timeline.fromMilliseconds(settleMs);
+    std::size_t done = 0;
+    for (auto& spike : m_spikes) {
+        if (spike.attribution)
+            continue;
+        const auto& frame = m_frames[spike.frameIndex];
+        if (frame.qpcEnd && *frame.qpcEnd > settled)
+            continue; // trace may not have delivered this window yet
+        spike.attribution = attribute(spike, frame, timeline, cfg);
+        ++done;
+    }
+    return done;
+}
+
 SessionStats CaptureSession::stats() const
 {
     return computeStats(m_frames, m_spikes.size());

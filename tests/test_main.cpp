@@ -1,10 +1,14 @@
 // Minimal dependency-free tests for the core library. Run via `ctest`.
 
 #include "core/CaptureSession.h"
+#include "core/Correlator.h"
+#include "core/EventTimeline.h"
+#include "core/LatencyStats.h"
 #include "core/PresentMonCsvParser.h"
 #include "core/SessionStats.h"
 #include "core/SpikeDetector.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -240,6 +244,218 @@ void session()
     CHECK(cs.frames().empty() && cs.spikes().empty());
 }
 
+// ---------------------------------------------------------------------------
+// M2: QPC times, event timeline, correlation
+// ---------------------------------------------------------------------------
+constexpr std::int64_t kFreq = 10'000'000; // 10 MHz -> 10'000 ticks per ms
+constexpr std::int64_t ms2t(double ms) { return static_cast<std::int64_t>(ms * 10'000.0); }
+
+void parserQpcColumns()
+{
+    {   // PresentMon 2.x --qpc_time: CPUStartQPC = frame start
+        PresentMonCsvParser p;
+        p.feedLine("Application,ProcessID,SwapChainAddress,CPUStartQPC,FrameTime,CPUBusy,GPUBusy");
+        auto f = p.feedLine("g.exe,7,0x1,123450000000,10.0,5,9");
+        CHECK(p.hasQpcTimes());
+        CHECK(f && f->qpcStart && *f->qpcStart == 123450000000);
+        CHECK(f && f->qpcEnd && *f->qpcEnd == 123450000000 + ms2t(10.0));
+    }
+    {   // 1.x: QPCTime = present time = frame end
+        PresentMonCsvParser p;
+        p.feedLine("Application,ProcessID,SwapChainAddress,QPCTime,MsBetweenPresents");
+        auto f = p.feedLine("g.exe,7,0x1,500000000,20.0");
+        CHECK(f && f->qpcEnd && *f->qpcEnd == 500000000);
+        CHECK(f && f->qpcStart && *f->qpcStart == 500000000 - ms2t(20.0));
+    }
+    {   // CPUStartTime in seconds: no QPC
+        PresentMonCsvParser p;
+        p.feedLine("Application,ProcessID,SwapChainAddress,CPUStartTime,FrameTime");
+        auto f = p.feedLine("g.exe,7,0x1,12.345,16.0");
+        CHECK(f && !f->qpcStart);
+        // ... but raw ticks under the same name are recognised.
+        auto g = p.feedLine("g.exe,7,0x1,98765432100,16.0");
+        CHECK(g && g->qpcStart && *g->qpcStart == 98765432100);
+    }
+    {   // custom frequency survives reset()
+        PresentMonCsvParser p;
+        p.setQpcFrequency(1'000'000);
+        p.reset();
+        p.feedLine("Application,ProcessID,SwapChainAddress,CPUStartQPC,FrameTime");
+        auto f = p.feedLine("g.exe,7,0x1,1000000,10.0");
+        CHECK(f && *f->qpcEnd == 1000000 + 10000);
+    }
+}
+
+SystemEvent ev(EventKind k, double startMs, double durMs, std::uint32_t pid = 0, std::string module = {})
+{
+    return SystemEvent{.kind = k, .startQpc = ms2t(startMs), .endQpc = ms2t(startMs + durMs),
+                       .processId = pid, .bytes = 0, .module = std::move(module)};
+}
+
+void timelineOverlap()
+{
+    EventTimeline tl(kFreq);
+    // Out-of-order batches, like per-CPU ETW buffers.
+    std::vector<SystemEvent> a{ev(EventKind::Dpc, 100, 1), ev(EventKind::Dpc, 300, 1)};
+    std::vector<SystemEvent> b{ev(EventKind::DiskIo, 50, 200), ev(EventKind::Isr, 200, 0.1)};
+    tl.append(a);
+    tl.append(b);
+    CHECK(tl.size() == 4);
+    CHECK(std::is_sorted(tl.events().begin(), tl.events().end(),
+                         [](const auto& x, const auto& y) { return x.startQpc < y.startQpc; }));
+    CHECK(tl.coveredUntil() == ms2t(301));
+
+    // Window 190..210 ms: the long disk I/O (50..250) and the ISR at 200.
+    const auto hits = tl.overlapping(ms2t(190), ms2t(210));
+    CHECK(hits.size() == 2);
+    CHECK(tl.overlapping(ms2t(260), ms2t(290)).empty());
+}
+
+struct Fixture {
+    EventTimeline tl{kFreq};
+    FrameRecord frame;
+    Spike spike;
+
+    Fixture(Bound bound = Bound::Stall)
+    {
+        tl.setTraceStart(0);
+        frame.processId = 42;
+        frame.frameTimeMs = 40.0;
+        frame.qpcStart = ms2t(1000);
+        frame.qpcEnd = ms2t(1040);
+        spike.frameTimeMs = 40.0;
+        spike.medianMs = 7.0; // excess 33 ms
+        spike.bound = bound;
+    }
+    void add(SystemEvent e) { tl.append(std::span{&e, 1}); }
+};
+
+void correlateDriverLatency()
+{
+    Fixture f;
+    f.add(ev(EventKind::Dpc, 1010, 3.0, 0, "nvlddmkm.sys"));
+    f.add(ev(EventKind::Dpc, 1020, 0.1, 0, "ndis.sys"));
+    const auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause == Cause::DriverLatency);
+    CHECK(a.side == Side::System);
+    CHECK(a.module == "nvlddmkm.sys");
+    CHECK(a.detail.find("3.0 ms") != std::string::npos);
+
+    // CPU-bound 33 ms excess: a single 3 ms DPC can't explain it -> game, with a note.
+    Fixture cpu(Bound::Cpu);
+    cpu.add(ev(EventKind::Dpc, 1010, 3.0, 0, "nvlddmkm.sys"));
+    auto c = attribute(cpu.spike, cpu.frame, cpu.tl);
+    CHECK(c.cause == Cause::GameCpu);
+    CHECK(c.detail.find("nvlddmkm.sys") != std::string::npos);
+    // ... but a DPC storm covering a real share of it is a system cause.
+    for (int i = 0; i < 4; ++i)
+        cpu.add(ev(EventKind::Dpc, 1015 + i * 3, 1.5, 0, "ndis.sys"));
+    CHECK(attribute(cpu.spike, cpu.frame, cpu.tl).cause == Cause::DriverLatency);
+
+    // Short DPCs are noise, not a cause.
+    Fixture g(Bound::Cpu);
+    g.add(ev(EventKind::Dpc, 1010, 0.2, 0, "ndis.sys"));
+    CHECK(attribute(g.spike, g.frame, g.tl).cause == Cause::GameCpu);
+}
+
+void correlatePagingAndDisk()
+{
+    Fixture f;
+    for (int i = 0; i < 5; ++i)
+        f.add(ev(EventKind::HardFault, 1005 + i * 3, 2.0, 42)); // 10 ms of game faults
+    f.add(ev(EventKind::HardFault, 1005, 20.0, 99));            // other process: ignored
+    auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause == Cause::Paging);
+    CHECK(a.detail.starts_with("5 hard faults"));
+
+    Fixture d;
+    d.add(ev(EventKind::DiskIo, 990, 25.0, 42));
+    CHECK(attribute(d.spike, d.frame, d.tl).cause == Cause::StorageWait);
+
+    // Other process's slow I/O only counts for stalls, with low confidence.
+    Fixture o;
+    o.add(ev(EventKind::DiskIo, 990, 25.0, 4));
+    a = attribute(o.spike, o.frame, o.tl);
+    CHECK(a.cause == Cause::StorageWait && a.confidence < 0.5);
+    Fixture oc(Bound::Cpu);
+    oc.add(ev(EventKind::DiskIo, 990, 25.0, 4));
+    CHECK(attribute(oc.spike, oc.frame, oc.tl).cause == Cause::GameCpu);
+}
+
+void correlateNoData()
+{
+    Fixture f;
+    f.frame.qpcStart.reset();
+    f.frame.qpcEnd.reset();
+    CHECK(attribute(f.spike, f.frame, f.tl).cause == Cause::NoTraceData);
+
+    Fixture late;
+    late.tl.setTraceStart(ms2t(2000)); // trace started after the frame
+    CHECK(attribute(late.spike, late.frame, late.tl).cause == Cause::NoTraceData);
+
+    Fixture clean(Bound::Gpu);
+    CHECK(attribute(clean.spike, clean.frame, clean.tl).cause == Cause::GameGpu);
+    Fixture stall(Bound::Stall);
+    CHECK(attribute(stall.spike, stall.frame, stall.tl).cause == Cause::UnexplainedWait);
+}
+
+void sessionAttributesAfterSettle()
+{
+    CaptureSession cs;
+    EventTimeline tl(kFreq);
+    for (int i = 0; i < 100; ++i) {
+        auto f = frame(i == 60 ? 50.0 : 10.0, 2.0, 2.0); // stall spike
+        f.processId = 42;
+        f.qpcStart = ms2t(i * 10.0);
+        f.qpcEnd = ms2t(i * 10.0 + f.frameTimeMs);
+        cs.append(f);
+    }
+    CHECK(cs.spikes().size() == 1);
+
+    CHECK(cs.attributePending(tl) == 0); // no trace yet
+    tl.setTraceStart(0);
+    auto dpc = ev(EventKind::Dpc, 610, 4.0, 0, "rtwlane.sys");
+    tl.append(std::span{&dpc, 1});
+    CHECK(cs.attributePending(tl) == 0); // not settled: coverage only ~614 ms
+
+    tl.noteCoverage(ms2t(3000));
+    CHECK(cs.attributePending(tl) == 1);
+    CHECK(cs.spikes()[0].attribution->cause == Cause::DriverLatency);
+    CHECK(cs.attributePending(tl) == 0); // idempotent
+
+    const auto d = cs.diagnosis();
+    CHECK(d.attributed == 1 && d.system == 1);
+    CHECK(d.topModule == "rtwlane.sys");
+    CHECK(d.verdict.starts_with("Mostly your system"));
+}
+
+void diagnosisMix()
+{
+    std::vector<Spike> spikes(4);
+    spikes[0].attribution = Attribution{Cause::GameCpu, Side::Game, 0.6, "", ""};
+    spikes[1].attribution = Attribution{Cause::GameCpu, Side::Game, 0.6, "", ""};
+    spikes[2].attribution = Attribution{Cause::GameGpu, Side::Game, 0.5, "", ""};
+    spikes[3].attribution = Attribution{Cause::NoTraceData, Side::Unknown, 0, "", ""};
+    auto d = diagnose(spikes);
+    CHECK(d.attributed == 3 && d.game == 3);
+    CHECK(d.topCause == Cause::GameCpu);
+    CHECK(d.verdict.starts_with("Mostly the game: 100%"));
+
+    CHECK(diagnose(std::vector<Spike>(2)).verdict == "Not enough data yet");
+}
+
+void latencyStats()
+{
+    LatencyStats s;
+    s.add(EventKind::Dpc, "a.sys", 100);
+    s.add(EventKind::Dpc, "a.sys", 1200);
+    s.add(EventKind::Isr, "b.sys", 600);
+    const auto w = s.worst(5);
+    CHECK(w.size() == 2);
+    CHECK(w[0].module == "a.sys" && w[0].dpcCount == 2 && w[0].over1ms == 1);
+    CHECK(w[1].module == "b.sys" && w[1].isrCount == 1 && w[1].over500us == 1);
+}
+
 } // namespace
 
 int main()
@@ -257,6 +473,14 @@ int main()
         {"medianEven", medianEven},
         {"stats", stats},
         {"session", session},
+        {"parserQpcColumns", parserQpcColumns},
+        {"timelineOverlap", timelineOverlap},
+        {"correlateDriverLatency", correlateDriverLatency},
+        {"correlatePagingAndDisk", correlatePagingAndDisk},
+        {"correlateNoData", correlateNoData},
+        {"sessionAttributesAfterSettle", sessionAttributesAfterSettle},
+        {"diagnosisMix", diagnosisMix},
+        {"latencyStats", latencyStats},
     };
 
     for (const auto& [name, fn] : tests) {
