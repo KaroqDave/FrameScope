@@ -103,7 +103,7 @@ if(FRAMESCOPE_BUILD_GUI)
     # so the Windows build asks for elevation via its manifest.
     if(WIN32)
         if(MSVC)
-            list(APPEND FRAMESCOPE_GUI_SOURCES resources/windows/framescope.manifest)
+            # The linker writes the elevation request itself (see below).
         else()
             enable_language(RC)
             set(FRAMESCOPE_MANIFEST_PATH ${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/framescope.manifest)
@@ -115,6 +115,9 @@ if(FRAMESCOPE_BUILD_GUI)
 
     qt_add_executable(framescope WIN32 ${FRAMESCOPE_GUI_SOURCES})
     target_link_libraries(framescope PRIVATE framescope_core framescope_platform Qt6::Widgets)
+    if(MSVC)
+        target_link_options(framescope PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
