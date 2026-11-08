@@ -30,8 +30,20 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   windows:
-    name: Windows (MSVC, Qt 6)
+    # Two packages: the regular one, and one with AMD GPU sensors (ADLX), which
+    # AMD's license only allows to ship together with EULA-AMD.txt.
+    name: Windows ${{ matrix.variant }} (MSVC, Qt 6)
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: standard
+            adlx: "OFF"
+            package: FrameScope
+          - variant: AMD
+            adlx: "ON"
+            package: FrameScope-AMD
     steps:
       - uses: actions/checkout@v5
 
@@ -45,11 +57,17 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      - name: Version label
+        shell: pwsh
+        run: |
+          $label = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "0.1.0-dev+$("${{ github.sha }}".Substring(0, 7))" }
+          "VERSION_LABEL=$label" >> $env:GITHUB_ENV
+
       # Errors are repeated as annotations so they show up on the commit's checks.
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object configure.log
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DFRAMESCOPE_WITH_ADLX=${{ matrix.adlx }} "-DFRAMESCOPE_VERSION_LABEL=$env:VERSION_LABEL" 2>&1 | Tee-Object configure.log
           if ($LASTEXITCODE) {
             Select-String -Path configure.log -Pattern 'Error|error' | Select-Object -First 15 | ForEach-Object { "::error::$($_.Line.Trim())" }
             exit 1
@@ -78,26 +96,27 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item build/framescope.exe, build/framescope-cli.exe, build/framescope-latency.exe dist/
-          Copy-Item README.md dist/
+          Copy-Item README.md, packaging/THIRD-PARTY-NOTICES.txt dist/
+          if ("${{ matrix.adlx }}" -eq "ON") { Copy-Item packaging/EULA-AMD.txt dist/ }
           windeployqt --release --no-translations --no-opengl-sw --no-system-d3d-compiler dist/framescope.exe
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: FrameScope-windows-x64
+          name: ${{ matrix.package }}-windows-x64
           path: dist/
 
       - name: Zip for release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath FrameScope-${{ github.ref_name }}-windows-x64.zip
+        run: Compress-Archive -Path dist/* -DestinationPath ${{ matrix.package }}-${{ github.ref_name }}-windows-x64.zip
 
-      - name: Upload artifact for release
+      - name: Upload zip for release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
-          name: release-zip
-          path: FrameScope-*-windows-x64.zip
+          name: release-${{ matrix.variant }}
+          path: ${{ matrix.package }}-*-windows-x64.zip
 
   release:
     name: GitHub release
@@ -107,11 +126,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v4
         with:
-          name: release-zip
+          pattern: release-*
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: FrameScope-*-windows-x64.zip
+          files: "*-windows-x64.zip"
+          body_path: packaging/RELEASE_NOTES.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true

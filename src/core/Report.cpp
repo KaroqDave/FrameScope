@@ -308,7 +308,7 @@ std::string renderHtmlReport(const ReportData& d)
         h += "</table>";
     }
 
-    h += "<footer>Created with FrameScope. Spike = frame more than 2× the rolling median and at least 8 ms above it. "
+    h += "<footer>Created with FrameScope " FRAMESCOPE_VERSION ". Spike = frame more than 2× the rolling median and at least 8 ms above it. "
          "Causes are likely explanations from system data during that frame, not proof.</footer>";
     h += "</body></html>\n";
     return h;

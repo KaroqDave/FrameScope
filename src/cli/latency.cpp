@@ -74,6 +74,7 @@ int main(int argc, char** argv)
     SetConsoleCtrlHandler(onCtrl, TRUE);
 #endif
 
+    out("FrameScope {} latency check", FRAMESCOPE_VERSION);
     const auto topo = win::queryCpuTopology();
     out("CPU: {}", core::describe(topo));
     out("Admin rights: {}", win::isElevated() ? "yes" : "NO (run as administrator)");

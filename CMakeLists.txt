@@ -10,6 +10,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Shown in the app, reports and diagnostics. CI sets it to the release tag.
+set(FRAMESCOPE_VERSION_LABEL "${PROJECT_VERSION}-dev" CACHE STRING "Version label, e.g. v0.1.0-beta.1")
+add_compile_definitions(FRAMESCOPE_VERSION="${FRAMESCOPE_VERSION_LABEL}")
+
 option(FRAMESCOPE_BUILD_GUI   "Build the Qt GUI"            ON)
 option(FRAMESCOPE_BUILD_TESTS "Build the unit tests"        ON)
 option(FRAMESCOPE_BUILD_CLI   "Build the command-line tool" ON)

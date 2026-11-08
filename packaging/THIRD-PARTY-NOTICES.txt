@@ -1,0 +1,20 @@
+FrameScope - third-party components in this package
+====================================================
+
+Qt 6 (Qt Core, Qt Gui, Qt Widgets and the plugins deployed next to framescope.exe)
+  Copyright (C) The Qt Company Ltd. and other contributors.
+  Licensed under the GNU Lesser General Public License v3 (LGPL-3.0).
+  https://www.gnu.org/licenses/lgpl-3.0.html
+  FrameScope links Qt dynamically. You may replace the Qt DLLs in this folder with
+  your own (modified) builds of the same Qt version. The Qt source code is available
+  at https://download.qt.io/official_releases/qt/
+
+AMD Device Library eXtra (ADLX) SDK - only in the "FrameScope-AMD" package
+  Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+  Used under the ADLX SDK License Agreement; see EULA-AMD.txt.
+  https://github.com/GPUOpen-LibrariesAndSDKs/ADLX
+
+Not included, loaded or run at runtime if present on your system:
+  - PresentMon (Intel, MIT license): https://github.com/GameTechDev/PresentMon
+  - NVIDIA Management Library (nvml.dll, part of the NVIDIA driver)
+  - AMD ADLX runtime (amdadlx64.dll, part of the AMD Adrenalin driver)

@@ -112,7 +112,8 @@ On single-CCD CPUs (e.g. 9800X3D, 9850X3D) the CCD check is skipped: there's onl
 living in this repository, because its license only allows distributing compiled code. It's on
 by default for MSVC builds (what CI uses) and opt-in for MinGW (`-DFRAMESCOPE_WITH_ADLX=ON`),
 since AMD only supports MSVC. `-DFRAMESCOPE_WITH_ADLX=OFF` builds without it. If you publish
-binaries that include ADLX, its license asks for an end-user license agreement.
+binaries that include ADLX, its license asks for an end-user license agreement; the
+AMD release package ships with `packaging/EULA-AMD.txt` for that reason.
 
 ## What M4 adds
 
@@ -155,6 +156,15 @@ It prints the worst drivers by single DPC/ISR plus a verdict (under 0.5 ms good,
 over 2 ms a problem). Run it idle and again with the game running. It also shows the CPU
 topology, which sensors work, and whether context-switch data arrives (~100 buckets/s), which
 makes it the quickest way to check M2/M3 on a new machine.
+
+## Download
+
+Prebuilt Windows builds are on the [Releases](https://github.com/KaroqDave/FrameScope/releases) page:
+
+| Package | AMD GPU sensors | License |
+|---|---|---|
+| `FrameScope-…-windows-x64.zip` | No | Third-party notices only |
+| `FrameScope-AMD-…-windows-x64.zip` | Yes (ADLX) | `EULA-AMD.txt`: required by AMD's ADLX license, use on AMD-based systems only |
 
 ## Build
 

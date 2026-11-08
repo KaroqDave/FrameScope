@@ -1,0 +1,98 @@
+FRAMESCOPE (AMD BUILD) - END USER LICENSE AGREEMENT
+
+IMPORTANT - READ CAREFULLY. This agreement applies to the "FrameScope-AMD" binary
+package ("Software"). Do not install, copy or use the Software until you have read
+and agreed to these terms. By installing, copying or using the Software you agree
+to them. If you do not agree, use the regular FrameScope package instead, which does
+not contain AMD code and is not covered by this agreement.
+
+This is an agreement between you and the author of FrameScope ("Licensor"). The
+Software contains code licensed to Licensor by Advanced Micro Devices, Inc. ("AMD")
+as part of the AMD Device Library eXtra (ADLX) SDK. AMD is expressly made a third
+party beneficiary of this agreement.
+
+1. LICENSE
+   You are granted a non-exclusive, royalty-free, revocable, non-transferable,
+   limited license to install and use the Software solely in conjunction with AMD
+   product-based systems or AMD components (for example a PC with an AMD processor
+   or AMD graphics card). The Software is subject to this restricted license and
+   may only be used for that purpose.
+
+2. RESTRICTIONS
+   You may not:
+   a) transfer, distribute, sublicense or duplicate the Software, except for one
+      reasonable backup copy;
+   b) decompile, reverse engineer, disassemble or otherwise reduce the Software to a
+      human-perceivable form, except as allowed by applicable law;
+   c) modify or create derivative works of the Software;
+   d) alter or remove any copyright, trademark or patent notice in the Software.
+
+3. OPEN SOURCE AND THIRD PARTY COMPONENTS
+   The Software includes components under their own licenses, listed in
+   THIRD-PARTY-NOTICES.txt (for example the Qt libraries under the GNU LGPL v3).
+   Where a component's license is inconsistent with this agreement, that component
+   is governed solely by its own license. Nothing in this agreement restricts the
+   rights that license gives you for that component (for the LGPL: replacing or
+   modifying the Qt libraries and reverse engineering for debugging such
+   modifications).
+   FrameScope's own source code is published separately; this agreement only covers
+   the binary package as distributed.
+
+4. OWNERSHIP
+   The Software, including all intellectual property rights in it, remains the
+   property of Licensor and its licensors (including AMD). You have no rights in it
+   except as expressly set out in this agreement.
+
+5. FEEDBACK
+   You have no obligation to give feedback. Licensor may use any feedback you give,
+   and may pass it on to AMD, and you grant Licensor, AMD and their affiliates a
+   worldwide, non-exclusive, irrevocable, royalty-free, perpetual license to use it.
+
+6. WARRANTY DISCLAIMER
+   THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. LICENSOR AND ITS
+   LICENSORS (INCLUDING AMD) DISCLAIM ALL WARRANTIES, EXPRESS, IMPLIED OR STATUTORY,
+   INCLUDING THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+   PURPOSE, TITLE AND NON-INFRINGEMENT, AND ANY WARRANTY THAT THE SOFTWARE WILL RUN
+   UNINTERRUPTED OR ERROR-FREE. THE ENTIRE RISK OF USING THE SOFTWARE IS WITH YOU.
+   Some jurisdictions do not allow the exclusion of implied warranties, so this
+   exclusion may not apply to you.
+
+7. LIMITATION OF LIABILITY AND INDEMNIFICATION
+   LICENSOR AND ITS LICENSORS (INCLUDING AMD) WILL NOT, UNDER ANY CIRCUMSTANCES, BE
+   LIABLE TO YOU FOR ANY PUNITIVE, DIRECT, INCIDENTAL, INDIRECT, SPECIAL OR
+   CONSEQUENTIAL DAMAGES ARISING FROM USE OF THE SOFTWARE OR THIS AGREEMENT, EVEN IF
+   ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. In no event shall the total liability
+   of Licensor or any of its licensors to you for all damages, losses and causes of
+   action exceed USD 100. You agree to defend, indemnify and hold harmless Licensor
+   and its licensors (including AMD) from any loss, damage, liability and expense
+   (including reasonable attorneys' fees) resulting from your use of the Software or
+   your violation of this agreement.
+
+8. EXPORT
+   You must comply fully with all applicable export and import laws and regulations
+   of the United States and of other countries. You may not export, re-export or
+   transfer the Software, directly or indirectly, to any country, end user or end use
+   for which a government export license or approval is required without first
+   obtaining it, including to sanctioned or embargoed countries, restricted end users,
+   or end uses involving nuclear, chemical or biological weapons, rocket systems or
+   unmanned air vehicles.
+
+9. U.S. GOVERNMENT END USERS
+   The Software is "commercial computer software" and is licensed to U.S. Government
+   end users only as a commercial item and with only the rights granted to all other
+   end users under this agreement.
+
+10. UPDATES
+   This agreement applies to the Software as originally distributed and to all
+   updates you later install, use or access. Licensor has no obligation to provide
+   support or updates.
+
+11. TERMINATION
+   This agreement ends automatically if you fail to comply with it, or when you tell
+   Licensor you want to end it. You must then delete all copies of the Software.
+   All provisions except Section 1 survive termination.
+
+12. GENERAL
+   You may not assign this agreement without Licensor's prior written consent. If a
+   provision is found unenforceable, it is deemed deleted and the rest remains in
+   effect.

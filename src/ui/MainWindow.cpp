@@ -179,7 +179,7 @@ MainWindow::~MainWindow()
 
 void MainWindow::buildUi()
 {
-    setWindowTitle(tr("FrameScope"));
+    setWindowTitle(QStringLiteral("FrameScope %1").arg(QCoreApplication::applicationVersion()));
     resize(1280, 820);
 
     m_presentMonPath = new QLineEdit;
