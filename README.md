@@ -166,6 +166,12 @@ Prebuilt Windows builds are on the [Releases](https://github.com/KaroqDave/Frame
 | `FrameScope-…-windows-x64.zip` | No | Third-party notices only |
 | `FrameScope-AMD-…-windows-x64.zip` | Yes (ADLX) | `EULA-AMD.txt`: required by AMD's ADLX license, use on AMD-based systems only |
 
+### Making a release
+
+Push a tag `vX.Y.Z` (or `vX.Y.Z-beta.N`), or a branch `release/vX.Y.Z-beta.N`. CI builds both
+packages and publishes the release (as a prerelease when the version has a suffix); with the
+branch variant it also creates the tag.
+
 ## Build
 
 Requirements: CMake ≥ 3.25, a C++23 compiler (GCC 13 / MSVC 17.8+), Qt ≥ 6.4 (Widgets).

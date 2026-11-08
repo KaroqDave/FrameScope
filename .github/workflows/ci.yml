@@ -1,8 +1,10 @@
 name: CI
 
+# Releases: push a tag "vX.Y.Z[-suffix]", or a branch "release/vX.Y.Z[-suffix]";
+# the release job then creates the tag itself.
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -60,8 +62,13 @@ jobs:
       - name: Version label
         shell: pwsh
         run: |
-          $label = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}" } else { "0.1.0-dev+$("${{ github.sha }}".Substring(0, 7))" }
+          $ref = "${{ github.ref }}"
+          $tag = ""
+          if ("${{ github.ref_type }}" -eq "tag") { $tag = "${{ github.ref_name }}" }
+          elseif ($ref.StartsWith("refs/heads/release/")) { $tag = $ref.Substring("refs/heads/release/".Length) }
+          $label = if ($tag) { $tag } else { "0.1.0-dev+$("${{ github.sha }}".Substring(0, 7))" }
           "VERSION_LABEL=$label" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
 
       # Errors are repeated as annotations so they show up on the commit's checks.
       - name: Configure
@@ -107,12 +114,12 @@ jobs:
           path: dist/
 
       - name: Zip for release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath ${{ matrix.package }}-${{ github.ref_name }}-windows-x64.zip
+        run: Compress-Archive -Path dist/* -DestinationPath "${{ matrix.package }}-$env:RELEASE_TAG-windows-x64.zip"
 
       - name: Upload zip for release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.RELEASE_TAG != ''
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.variant }}
@@ -120,13 +127,20 @@ jobs:
 
   release:
     name: GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag' || startsWith(github.ref, 'refs/heads/release/')
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v5
+
+      - name: Release tag
+        id: tag
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then tag="${GITHUB_REF_NAME}"; else tag="${GITHUB_REF_NAME#release/}"; fi
+          echo "name=$tag" >> "$GITHUB_OUTPUT"
+          case "$tag" in *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT";; *) echo "prerelease=false" >> "$GITHUB_OUTPUT";; esac
 
       - uses: actions/download-artifact@v4
         with:
@@ -135,7 +149,10 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          name: FrameScope ${{ steps.tag.outputs.name }}
           files: "*-windows-x64.zip"
           body_path: packaging/RELEASE_NOTES.md
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ steps.tag.outputs.prerelease }}
           generate_release_notes: true
