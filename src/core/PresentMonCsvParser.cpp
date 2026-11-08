@@ -93,6 +93,7 @@ bool PresentMonCsvParser::parseHeader(std::string_view line)
         return false;
 
     m_frameTimeCol = frameTime;
+    m_header = std::string{line};
     m_cpuBusyCol = findColumn(cols, {"CPUBusy", "MsCPUBusy"});
     m_gpuBusyCol = findColumn(cols, {"GPUBusy", "MsGPUBusy", "MsGPUActive"});
     m_pidCol = findColumn(cols, {"ProcessID"});

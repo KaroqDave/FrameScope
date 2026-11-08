@@ -48,4 +48,7 @@ core::CpuTopology queryCpuTopology();
 // Executable name of a running process ("" if it can't be opened). Cached.
 std::string processName(std::uint32_t pid);
 
+// True if this process runs with admin rights (needed for ETW and PresentMon).
+bool isElevated();
+
 } // namespace framescope::win

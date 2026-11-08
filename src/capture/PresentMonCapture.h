@@ -38,6 +38,8 @@ public:
     void start(const Options& options);
     void stop();
     [[nodiscard]] bool isRunning() const;
+    [[nodiscard]] const core::PresentMonCsvParser& parser() const noexcept { return m_parser; }
+    [[nodiscard]] const QString& commandLine() const noexcept { return m_commandLine; }
 
 signals:
     // Batched per stdout read to keep UI overhead low at high frame rates.
@@ -53,6 +55,7 @@ private:
 
     QProcess m_process;
     QString m_presentMonPath;
+    QString m_commandLine;
     core::PresentMonCsvParser m_parser;
     QByteArray m_lineBuffer;
 };

@@ -61,7 +61,8 @@ void PresentMonCapture::start(const Options& options)
     };
     args += options.extraArgs;
 
-    emit logMessage(QStringLiteral("%1 %2").arg(options.presentMonPath, args.join(' ')));
+    m_commandLine = QStringLiteral("%1 %2").arg(options.presentMonPath, args.join(' '));
+    emit logMessage(m_commandLine);
     m_process.start(options.presentMonPath, args);
 }
 

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace framescope::core {
@@ -96,6 +97,10 @@ struct CpuTopology {
     [[nodiscard]] std::size_t ccdCount() const noexcept { return l3KBOfCcd.size(); }
     [[nodiscard]] bool hasAsymmetricCache() const noexcept { return vcacheCcd >= 0; }
 };
+
+// One-line human-readable summary, for logs and diagnostics.
+std::string describe(const SystemSample& sample);
+std::string describe(const CpuTopology& topology);
 
 // Builds a topology from (cpu -> L3 group, L3 size) pairs.
 CpuTopology makeTopology(const std::vector<std::uint8_t>& ccdOfCpu, const std::vector<std::uint32_t>& l3KBOfCcd);

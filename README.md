@@ -183,6 +183,14 @@ framescope-cli session.fscope --report report.html
 framescope-cli run1.fscope --compare run2.fscope
 ```
 
+## Reporting problems
+
+**Tools → Save diagnostics…** writes one text file with everything needed to debug a capture:
+build and OS, admin rights, CPU topology, sensor sources and recent samples, ETW event counters
+(per event type, unresolved drivers, malformed and lost events), the PresentMon command and CSV
+header, causes per spike, findings and the log. `framescope-latency` prints the same trace
+counters at the end.
+
 ## Notes
 
 - **The ETW event layouts are untested on real hardware so far.** They're parsed by hand from

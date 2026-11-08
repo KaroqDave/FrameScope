@@ -35,6 +35,28 @@ struct KernelTraceOptions {
 //
 // Needs admin rights. On non-Windows builds isSupported() is false and
 // start() always fails.
+// Raw counters, for checking that event decoding works on a given machine.
+struct TraceDiagnostics {
+    std::uint64_t eventsTotal = 0;
+    std::uint64_t dpcIsr = 0;
+    std::uint64_t dpcIsrUnresolved = 0;  // routine address not inside a known driver
+    std::uint64_t hardFaults = 0;
+    std::uint64_t diskIo = 0;
+    std::uint64_t contextSwitches = 0;
+    std::uint64_t threadEvents = 0;
+    std::uint64_t imageEvents = 0;
+    std::uint64_t fileCreates = 0;
+    std::uint64_t shaderCacheWrites = 0;
+    std::uint64_t malformed = 0;         // known event, but too short / implausible
+    std::uint64_t cpuBucketsFinished = 0;
+    std::uint64_t knownThreads = 0;
+    std::uint64_t knownDrivers = 0;
+    std::uint64_t eventsLost = 0;        // ETW: buffers full
+    std::uint64_t realtimeBuffersLost = 0;
+};
+
+std::string describe(const TraceDiagnostics& d);
+
 class KernelTrace {
 public:
     KernelTrace();
@@ -66,6 +88,7 @@ public:
     [[nodiscard]] core::LatencyStats latencySnapshot() const;
     [[nodiscard]] std::string lastError() const;
     [[nodiscard]] std::string sessionDescription() const;      // which session mode is in use
+    [[nodiscard]] TraceDiagnostics diagnostics() const;
 
 private:
     struct Impl;

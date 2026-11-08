@@ -75,13 +75,8 @@ int main(int argc, char** argv)
 #endif
 
     const auto topo = win::queryCpuTopology();
-    if (topo.ccdCount() > 0) {
-        std::string l3;
-        for (const auto kb : topo.l3KBOfCcd)
-            l3 += std::format("{}{} MB", l3.empty() ? "" : " / ", kb / 1024);
-        out("CPU: {} logical CPUs, {} L3 group(s): {}{}", topo.ccdOfCpu.size(), topo.ccdCount(), l3,
-            topo.hasAsymmetricCache() ? std::format(", 3D V-Cache on CCD{}", topo.vcacheCcd) : std::string{});
-    }
+    out("CPU: {}", core::describe(topo));
+    out("Admin rights: {}", win::isElevated() ? "yes" : "NO (run as administrator)");
     opts.ccdOfCpu = topo.ccdOfCpu;
 
     win::SystemSampler sampler;
@@ -117,25 +112,10 @@ int main(int argc, char** argv)
     const auto samples = sampler.drain();
     out("Sensors: {}", sampler.status());
     sampler.stop();
-    if (!samples.empty()) {
-        const auto& s = samples.back();
-        std::string line = "Last sample:";
-        if (s.availableRamMB && s.totalRamMB)
-            line += std::format(" RAM {:.1f}/{:.1f} GB free", *s.availableRamMB / 1024, *s.totalRamMB / 1024);
-        if (s.cpuPerfLimitPct)
-            line += std::format(", CPU perf limit {:.0f}%", *s.cpuPerfLimitPct);
-        if (s.gpu) {
-            line += std::format(", GPU {:.0f} MHz {:.0f} °C", s.gpu->coreClockMHz, s.gpu->temperatureC);
-            if (s.gpu->hotspotC)
-                line += std::format(" (hotspot {:.0f} °C)", *s.gpu->hotspotC);
-            line += std::format(" {:.0f} W", s.gpu->powerW);
-            if (s.gpu->usagePct)
-                line += std::format(" {:.0f}% load", *s.gpu->usagePct);
-            line += std::format(" reasons 0x{:x}{}", s.gpu->reasons, s.gpu->driverReportsReasons ? "" : " (inferred)");
-        }
-        out("{}", line);
-    }
+    if (!samples.empty())
+        out("Last sample: {}", core::describe(samples.back()));
     out("CPU scheduling buckets: {} (expect ~100 per second)", cpuBuckets);
+    out("\nTrace diagnostics:\n{}", etw::describe(trace.diagnostics()));
 
     if (trace.dpcIsrCount() == 0) {
         out("No DPC/ISR events received. The session started but delivered nothing;");

@@ -882,6 +882,22 @@ void correlateAmdThrottle()
     CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "No GPU throttling"; }));
 }
 
+void describeHelpers()
+{
+    auto s = sample(0);
+    s.availableRamMB = 42291;
+    s.totalRamMB = 64614;
+    s.gpu = amd(2900, 98, 81);
+    const auto text = describe(s);
+    CHECK(text.find("RAM 41.3/63.1 GB free") != std::string::npos);
+    CHECK(text.find("hotspot 81") != std::string::npos);
+    CHECK(text.find("(inferred)") != std::string::npos);
+    CHECK(describe(SystemSample{}) == "(empty sample)");
+
+    CHECK(describe(makeTopology({0, 0, 1, 1}, {98304, 32768})) == "4 logical CPUs, 2 L3 group(s): 96 MB / 32 MB, 3D V-Cache on CCD0");
+    CHECK(describe(CpuTopology{}) == "unknown");
+}
+
 } // namespace
 
 int main()
@@ -921,6 +937,7 @@ int main()
         {"backgroundFinding", backgroundFinding},
         {"gpuThrottleInference", gpuThrottleInference},
         {"correlateAmdThrottle", correlateAmdThrottle},
+        {"describeHelpers", describeHelpers},
     };
 
     for (const auto& [name, fn] : tests) {

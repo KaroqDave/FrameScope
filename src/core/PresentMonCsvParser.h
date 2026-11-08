@@ -38,6 +38,7 @@ public:
     [[nodiscard]] bool hasQpcTimes() const noexcept { return m_qpcCol >= 0; }
     [[nodiscard]] std::size_t skippedRows() const noexcept { return m_skippedRows; }
     [[nodiscard]] const std::string& lockedSwapChain() const noexcept { return m_lockedKey; }
+    [[nodiscard]] const std::string& headerLine() const noexcept { return m_header; }
 
 private:
     bool parseHeader(std::string_view line);
@@ -57,6 +58,7 @@ private:
     std::int64_t m_qpcFrequency = 10'000'000;
 
     std::string m_lockedKey;
+    std::string m_header;
     double m_elapsedMs = 0.0;
     std::size_t m_skippedRows = 0;
 };

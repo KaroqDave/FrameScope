@@ -59,6 +59,7 @@ private:
     void saveSession();
     void exportReport();
     void compareWithEarlierRun();
+    void saveDiagnostics();
     void browsePresentMon();
     void resetForLoadedData();
 

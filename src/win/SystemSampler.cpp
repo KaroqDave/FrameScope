@@ -417,6 +417,18 @@ std::string processName(std::uint32_t pid)
     return name;
 }
 
+bool isElevated()
+{
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const bool ok = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
+    CloseHandle(token);
+    return ok && elevation.TokenIsElevated != 0;
+}
+
 } // namespace framescope::win
 
 #else // ---------------------------------------------------------------------
@@ -435,6 +447,7 @@ std::vector<core::SystemSample> SystemSampler::drain() { return {}; }
 std::string SystemSampler::status() const { return "System sampling is only available on Windows"; }
 core::CpuTopology queryCpuTopology() { return {}; }
 std::string processName(std::uint32_t) { return {}; }
+bool isElevated() { return false; }
 
 } // namespace framescope::win
 

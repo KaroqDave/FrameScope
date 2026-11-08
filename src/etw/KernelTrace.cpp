@@ -1,5 +1,31 @@
 #include "etw/KernelTrace.h"
 
+#include <format>
+
+namespace framescope::etw {
+
+std::string describe(const TraceDiagnostics& d)
+{
+    const double unresolvedPct = d.dpcIsr ? 100.0 * static_cast<double>(d.dpcIsrUnresolved) / static_cast<double>(d.dpcIsr) : 0.0;
+    std::string out;
+    out += std::format("Events total        {}\n", d.eventsTotal);
+    out += std::format("DPC/ISR             {} ({:.1f}% not resolved to a driver)\n", d.dpcIsr, unresolvedPct);
+    out += std::format("Known drivers       {}\n", d.knownDrivers);
+    out += std::format("Hard faults         {}\n", d.hardFaults);
+    out += std::format("Disk I/O            {}\n", d.diskIo);
+    out += std::format("Context switches    {}\n", d.contextSwitches);
+    out += std::format("CPU buckets         {}\n", d.cpuBucketsFinished);
+    out += std::format("Thread events       {} ({} threads known)\n", d.threadEvents, d.knownThreads);
+    out += std::format("Image events        {}\n", d.imageEvents);
+    out += std::format("File creates        {}\n", d.fileCreates);
+    out += std::format("Shader cache writes {}\n", d.shaderCacheWrites);
+    out += std::format("Malformed events    {}\n", d.malformed);
+    out += std::format("Events lost         {} (real-time buffers lost {})\n", d.eventsLost, d.realtimeBuffersLost);
+    return out;
+}
+
+} // namespace framescope::etw
+
 #ifdef _WIN32
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -142,6 +168,20 @@ struct KernelTrace::Impl {
     std::atomic<std::int64_t> lastQpc{0};
     std::atomic<std::uint64_t> dpcIsrCount{0};
 
+    // Diagnostics counters (written on the callback thread, read anywhere)
+    struct Counters {
+        std::atomic<std::uint64_t> total{0}, unresolved{0}, hardFaults{0}, diskIo{0}, cswitch{0}, thread{0},
+            image{0}, fileCreates{0}, shaderWrites{0}, malformed{0}, buckets{0}, threads{0}, drivers{0},
+            eventsLost{0}, buffersLost{0};
+        void reset()
+        {
+            for (auto* c : {&total, &unresolved, &hardFaults, &diskIo, &cswitch, &thread, &image, &fileCreates,
+                            &shaderWrites, &malformed, &buckets, &threads, &drivers, &eventsLost, &buffersLost})
+                c->store(0);
+        }
+    } counters;
+    static void bump(std::atomic<std::uint64_t>& c) { c.fetch_add(1, std::memory_order_relaxed); }
+
     mutable std::mutex mutex; // guards everything below
     std::vector<core::SystemEvent> pending;
     core::LatencyStats stats;
@@ -222,6 +262,7 @@ struct KernelTrace::Impl {
                 ob.bucket.topBackgroundPid = pid;
             }
         }
+        bump(counters.buckets);
         std::lock_guard lock(mutex);
         finishedBuckets.push_back(ob.bucket);
     }
@@ -305,6 +346,7 @@ struct KernelTrace::Impl {
 
         if (ts > lastQpc.load(std::memory_order_relaxed))
             lastQpc.store(ts, std::memory_order_relaxed);
+        bump(counters.total);
         if (!data)
             return;
 
@@ -320,15 +362,17 @@ struct KernelTrace::Impl {
             else
                 return;
             if (len < 8 + ptr)
-                return;
+                return bump(counters.malformed);
 
             const auto initial = read<std::int64_t>(data, 0);
             const auto duration = ts - initial;
             if (duration < 0 || duration > freq) // > 1 s: corrupt or clock mismatch
-                return;
+                return bump(counters.malformed);
 
             dpcIsrCount.fetch_add(1, std::memory_order_relaxed);
             auto module = resolve(readPtr(data, 8, ptr));
+            if (module == "unknown")
+                bump(counters.unresolved);
             const double us = static_cast<double>(duration) * 1e6 / static_cast<double>(freq);
 
             std::lock_guard lock(mutex);
@@ -342,10 +386,11 @@ struct KernelTrace::Impl {
             // InitialTime (8), ReadOffset (8), VirtualAddress (ptr), FileObject (ptr),
             // TThreadId (4), ByteCount (4)
             if (len < 16 + 2 * ptr + 8)
-                return;
+                return bump(counters.malformed);
             const auto initial = read<std::int64_t>(data, 0);
             if (initial > ts || ts - initial > 10 * freq)
-                return;
+                return bump(counters.malformed);
+            bump(counters.hardFaults);
             const auto tid = read<std::uint32_t>(data, 16 + 2 * ptr);
             const auto bytes = read<std::uint32_t>(data, 16 + 2 * ptr + 4);
             push({core::EventKind::HardFault, initial, ts, processOf(tid), bytes, {}});
@@ -357,11 +402,12 @@ struct KernelTrace::Impl {
             // FileObject (ptr), Irp (ptr), HighResResponseTime (8), IssuingThreadId (4)
             const std::size_t respOff = 24 + 2 * ptr;
             if (len < respOff + 8)
-                return;
+                return bump(counters.malformed);
             const auto bytes = read<std::uint32_t>(data, 8);
             const auto response = static_cast<std::int64_t>(read<std::uint64_t>(data, respOff));
             if (response < 0 || response > 60 * freq)
-                return;
+                return bump(counters.malformed);
+            bump(counters.diskIo);
             const std::uint32_t tid = len >= respOff + 12 ? read<std::uint32_t>(data, respOff + 8) : 0;
             push({core::EventKind::DiskIo, ts - response, ts, processOf(tid), bytes, {}});
             return;
@@ -370,13 +416,16 @@ struct KernelTrace::Impl {
         if (IsEqualGUID(g, kThreadGuid)) {
             if (op == kOpCSwitch) {
                 // NewThreadId (4), OldThreadId (4), priorities/states ...
-                if (len >= 8)
-                    onContextSwitch(GetEventProcessorIndex(&r), ts, read<std::uint32_t>(data, 0));
+                if (len < 8)
+                    return bump(counters.malformed);
+                bump(counters.cswitch);
+                onContextSwitch(GetEventProcessorIndex(&r), ts, read<std::uint32_t>(data, 0));
                 return;
             }
             // ProcessId (4), TThreadId (4), ...
             if (len < 8)
-                return;
+                return bump(counters.malformed);
+            bump(counters.thread);
             const auto pid = read<std::uint32_t>(data, 0);
             const auto tid = read<std::uint32_t>(data, 4);
             if (op == kOpStart || op == kOpDcStart)
@@ -385,6 +434,7 @@ struct KernelTrace::Impl {
                 threadToProcess.erase(tid);
                 lastCpuOfThread.erase(tid);
             }
+            counters.threads.store(threadToProcess.size(), std::memory_order_relaxed);
             return;
         }
 
@@ -394,7 +444,8 @@ struct KernelTrace::Impl {
             // FileName (wchar_t[])
             const std::size_t nameOff = 2 * ptr + 16 + ptr + 16;
             if (len < nameOff)
-                return;
+                return bump(counters.malformed);
+            bump(counters.image);
             const auto base = readPtr(data, 0, ptr);
             const bool kernelSpace = ptr == 8 ? (base >> 63) != 0 : (base >> 31) != 0;
             if (!kernelSpace)
@@ -409,6 +460,7 @@ struct KernelTrace::Impl {
                 modules.erase(base);
                 lastRoutine = 0;
             }
+            counters.drivers.store(modules.size(), std::memory_order_relaxed);
         }
     }
 
@@ -491,6 +543,7 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     m->modules.clear();
     m->lastRoutine = 0;
     m->dpcIsrCount = 0;
+    m->counters.reset();
 
     // Prefer a private system logger session (Windows 8+), so we don't fight
     // LatencyMon & co. over the single NT Kernel Logger.
@@ -545,7 +598,10 @@ void KernelTrace::stop()
         return;
 
     Properties props(m->sessionName.c_str(), m->sessionGuid, m->logFileMode, 0);
-    ControlTraceW(m->session, nullptr, props.get(), EVENT_TRACE_CONTROL_STOP);
+    if (ControlTraceW(m->session, nullptr, props.get(), EVENT_TRACE_CONTROL_STOP) == ERROR_SUCCESS) {
+        m->counters.eventsLost = props.get()->EventsLost;
+        m->counters.buffersLost = props.get()->RealTimeBuffersLost;
+    }
     m->worker.join();
     CloseTrace(m->consumer);
     m->consumer = INVALID_PROCESSTRACE_HANDLE;
@@ -587,6 +643,37 @@ std::string KernelTrace::lastError() const
     return m->error;
 }
 
+TraceDiagnostics KernelTrace::diagnostics() const
+{
+    // While running, ask ETW for the current loss counters.
+    if (isRunning()) {
+        Properties props(m->sessionName.c_str(), m->sessionGuid, m->logFileMode, 0);
+        if (ControlTraceW(m->session, nullptr, props.get(), EVENT_TRACE_CONTROL_QUERY) == ERROR_SUCCESS) {
+            m->counters.eventsLost = props.get()->EventsLost;
+            m->counters.buffersLost = props.get()->RealTimeBuffersLost;
+        }
+    }
+    const auto& c = m->counters;
+    TraceDiagnostics d;
+    d.eventsTotal = c.total;
+    d.dpcIsr = m->dpcIsrCount;
+    d.dpcIsrUnresolved = c.unresolved;
+    d.hardFaults = c.hardFaults;
+    d.diskIo = c.diskIo;
+    d.contextSwitches = c.cswitch;
+    d.threadEvents = c.thread;
+    d.imageEvents = c.image;
+    d.fileCreates = c.fileCreates;
+    d.shaderCacheWrites = c.shaderWrites;
+    d.malformed = c.malformed;
+    d.cpuBucketsFinished = c.buckets;
+    d.knownThreads = c.threads;
+    d.knownDrivers = c.drivers;
+    d.eventsLost = c.eventsLost;
+    d.realtimeBuffersLost = c.buffersLost;
+    return d;
+}
+
 std::string KernelTrace::sessionDescription() const
 {
     std::lock_guard lock(m->mutex);
@@ -625,6 +712,7 @@ std::uint64_t KernelTrace::dpcIsrCount() const noexcept { return 0; }
 core::LatencyStats KernelTrace::latencySnapshot() const { return {}; }
 std::string KernelTrace::lastError() const { return "Kernel tracing is only available on Windows"; }
 std::string KernelTrace::sessionDescription() const { return {}; }
+TraceDiagnostics KernelTrace::diagnostics() const { return {}; }
 
 } // namespace framescope::etw
 

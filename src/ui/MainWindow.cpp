@@ -6,12 +6,15 @@
 #include "ui/FrameTimeView.h"
 
 #include <QAction>
+#include <QCoreApplication>
 #include <QCheckBox>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QSysInfo>
+#include <QTextStream>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -32,6 +35,7 @@
 #include <QVBoxLayout>
 
 #include <exception>
+#include <map>
 
 namespace framescope::ui {
 namespace {
@@ -305,6 +309,9 @@ void MainWindow::buildMenus()
     auto* tools = menuBar()->addMenu(tr("&Tools"));
     add(tools, tr("Idle &baseline (%1 s)").arg(kBaselineSeconds), &MainWindow::startBaseline);
     add(tools, tr("&Compare with earlier run…"), &MainWindow::compareWithEarlierRun);
+    tools->addSeparator();
+    // Stays enabled while capturing: a snapshot mid-capture is useful too.
+    tools->addAction(tr("Save &diagnostics…"), this, &MainWindow::saveDiagnostics);
 }
 
 void MainWindow::setBusy(bool busy)
@@ -719,6 +726,108 @@ void MainWindow::compareWithEarlierRun()
     m_comparison = core::compareRuns(earlier.frames(), earlier.spikes(), m_session.frames(), m_session.spikes());
     log(tr("Compared with %1: %2").arg(QFileInfo(path).fileName(), qs(m_comparison->verdict)));
     updateFindings();
+}
+
+void MainWindow::saveDiagnostics()
+{
+    const auto path = QFileDialog::getSaveFileName(
+        this, tr("Save diagnostics"),
+        QStringLiteral("%1/framescope-diagnostics-%2.txt").arg(lastDir(), QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmm"))),
+        tr("Text files (*.txt)"));
+    if (path.isEmpty())
+        return;
+    rememberDir(path);
+
+    QString text;
+    QTextStream o(&text);
+    const auto section = [&o](const QString& title) { o << "\n== " << title << " ==\n"; };
+
+    o << "FrameScope diagnostics, " << QDateTime::currentDateTime().toString(Qt::ISODate) << "\n";
+    section(tr("Build and system"));
+    o << "FrameScope   " << QCoreApplication::applicationVersion() << "\n";
+    o << "Qt           " << qVersion() << "\n";
+#if defined(_MSC_VER)
+    o << "Compiler     MSVC " << _MSC_VER << "\n";
+#elif defined(__clang__)
+    o << "Compiler     Clang " << __clang_major__ << "." << __clang_minor__ << "\n";
+#elif defined(__GNUC__)
+    o << "Compiler     GCC " << __GNUC__ << "." << __GNUC_MINOR__ << "\n";
+#endif
+#ifdef FRAMESCOPE_HAVE_ADLX_BUILD
+    o << "ADLX         built in\n";
+#endif
+    o << "OS           " << QSysInfo::prettyProductName() << " (kernel " << QSysInfo::kernelVersion() << ")\n";
+    o << "Admin rights " << (win::isElevated() ? "yes" : "no") << "\n";
+    o << "CPU          " << qs(core::describe(win::queryCpuTopology())) << "\n";
+    o << "QPC freq     " << etw::KernelTrace::qpcFrequency() << " Hz\n";
+    o << "Mode         " << (m_mode == Mode::Capture ? "capturing" : m_mode == Mode::Baseline ? "baseline" : "idle") << "\n";
+
+    section(tr("Sensors"));
+    o << (m_sensors.empty() ? qs(m_sampler.status()) : qs(m_sensors)) << "\n";
+    const auto& samples = m_timeline.samples();
+    const std::size_t first = samples.size() > 10 ? samples.size() - 10 : 0;
+    o << samples.size() << " samples on the timeline; last " << (samples.size() - first) << ":\n";
+    for (std::size_t i = first; i < samples.size(); ++i)
+        o << "  " << qs(core::describe(samples[i])) << "\n";
+
+    section(tr("System trace"));
+    o << "Session      " << qs(m_trace.sessionDescription().empty() ? std::string{"(not started)"} : m_trace.sessionDescription()) << "\n";
+    if (const auto err = m_trace.lastError(); !err.empty())
+        o << "Last error   " << qs(err) << "\n";
+    o << qs(etw::describe(m_trace.diagnostics()));
+    o << "Timeline     " << m_timeline.size() << " events, game CPU time by CCD:";
+    for (std::size_t i = 0; i < m_timeline.topology().ccdCount(); ++i)
+        o << " CCD" << i << "=" << qRound(m_timeline.gameUsByCcdTotal()[i] / 1000.0) << " ms";
+    o << ", " << m_timeline.gameCrossCcdMigrationsTotal() << " cross-CCD migrations\n";
+
+    section(tr("PresentMon"));
+    const auto& parser = m_capture.parser();
+    o << "Command      " << (m_capture.commandLine().isEmpty() ? tr("(not started)") : m_capture.commandLine()) << "\n";
+    o << "Header       " << qs(parser.headerLine().empty() ? std::string{"(none yet)"} : parser.headerLine()) << "\n";
+    o << "QPC times    " << (parser.hasQpcTimes() ? "yes" : "no (spikes can't be matched to system events)") << "\n";
+    o << "Swap chain   " << qs(parser.lockedSwapChain()) << "\n";
+    o << "Skipped rows " << parser.skippedRows() << "\n";
+    o << "Game         " << qs(m_application) << " (PID " << m_gamePid << ")\n";
+
+    section(tr("Session"));
+    const auto st = m_session.stats();
+    o << st.frames << " frames, " << st.durationSeconds << " s, avg " << st.averageFps << " fps, " << st.spikes << " spikes\n";
+    std::map<std::string, int> causes;
+    int pending = 0;
+    for (const auto& sp : m_session.spikes()) {
+        if (sp.attribution)
+            ++causes[std::string{core::toString(sp.attribution->cause)}];
+        else
+            ++pending;
+    }
+    for (const auto& [cause, n] : causes)
+        o << "  " << qs(cause) << ": " << n << "\n";
+    if (pending > 0)
+        o << "  (not attributed yet: " << pending << ")\n";
+    o << "Verdict      " << qs(m_session.diagnosis().verdict) << "\n";
+
+    section(tr("Findings"));
+    for (const auto& f : currentFindings())
+        o << "[" << QString::fromUtf8(core::toString(f.level).data()) << "] " << qs(f.title) << ": " << qs(f.detail) << "\n";
+    for (const auto& f : m_baselineFindings)
+        o << "[baseline " << QString::fromUtf8(core::toString(f.level).data()) << "] " << qs(f.title) << ": " << qs(f.detail) << "\n";
+
+    section(tr("Worst drivers"));
+    for (const auto& d : currentDrivers())
+        o << qs(d.module) << ": max DPC " << d.maxDpcUs / 1000.0 << " ms, max ISR " << d.maxIsrUs / 1000.0
+          << " ms, " << d.dpcCount << " DPCs, " << d.over1ms << "x over 1 ms\n";
+
+    section(tr("Log"));
+    o << m_log->toPlainText() << "\n";
+    o.flush();
+
+    QFile file(path);
+    const auto bytes = text.toUtf8();
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text) || file.write(bytes) != bytes.size()) {
+        QMessageBox::warning(this, tr("Could not save diagnostics"), file.errorString());
+        return;
+    }
+    log(tr("Saved diagnostics to %1").arg(path));
 }
 
 // ===========================================================================
