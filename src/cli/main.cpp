@@ -109,6 +109,17 @@ int main(int argc, char** argv)
             }
         }
 
+        // Findings: saved ones (from .fscope) plus the stutter pattern from the frames.
+        auto findings = run.meta.findings;
+        std::erase_if(findings, [](const Finding& f) { return f.title.starts_with("Stutter "); });
+        for (auto& f : stutterPatternFindings(run.session.frames(), run.session.spikes()))
+            findings.push_back(std::move(f));
+        if (!findings.empty()) {
+            out(stdout, "\nFindings:");
+            for (const auto& f : findings)
+                out(stdout, "  [{}] {}: {}", toString(f.level), f.title, f.detail);
+        }
+
         std::optional<RunComparison> comparison;
         if (!comparePath.empty()) {
             const auto second = load(comparePath);
@@ -134,7 +145,7 @@ int main(int argc, char** argv)
             d.sensors = run.meta.sensors;
             d.frames = run.session.frames();
             d.spikes = run.session.spikes();
-            d.findings = run.meta.findings;
+            d.findings = findings;
             d.drivers = run.meta.drivers;
             d.comparison = comparison;
             std::ofstream f(reportPath, std::ios::binary);

@@ -595,6 +595,10 @@ void correlateCpuScheduling()
     Fixture ccd(Bound::Cpu);
     ccd.tl.setTopology(makeTopology({0, 0, 1, 1}, {98304, 32768}));
     bs.clear();
+    for (int i = 0; i < 1000; ++i) // normally the game stays on the V-Cache CCD
+        bs.push_back(bucket(-10000.0 + i * 10.0, 8000, 200, 1000, 0, 0));
+    ccd.tl.appendCpuBuckets(bs);
+    bs.clear();
     for (double t = 990; t < 1040; t += 10)
         bs.push_back(bucket(t, 2000, 6000, 1000, 0, 0));
     ccd.tl.appendCpuBuckets(bs);
@@ -940,6 +944,69 @@ void correlateShaderCompile()
     CHECK(r.spikes[0].attribution && r.spikes[0].attribution->cause == Cause::ShaderCompile);
 }
 
+void perfLimitCounter()
+{
+    CHECK(near(perfLimitFromCounter(100.0), 0.0));  // no limit
+    CHECK(near(perfLimitFromCounter(115.0), 0.0));  // boosting
+    CHECK(near(perfLimitFromCounter(70.0), 30.0));  // capped by 30%
+    CHECK(near(perfLimitFromCounter(-5.0), 100.0));
+}
+
+void ccdRelativeToSession()
+{
+    // Session: 4% off the V-Cache CCD and ~5 cross-CCD migrations per ms, like a real 9950X3D.
+    const auto setup = [](Fixture& f, float ccd0, float ccd1, std::uint16_t crossPerBucket) {
+        f.tl.setTopology(makeTopology({0, 0, 1, 1}, {98304, 32768}));
+        std::vector<CpuBucket> normal;
+        for (int i = 0; i < 2000; ++i) // 20 s of normal operation, before the spike
+            normal.push_back(bucket(-20000.0 + i * 10.0, 9600, 400, 1000, 0, 0, 50));
+        f.tl.appendCpuBuckets(normal);
+        std::vector<CpuBucket> window;
+        for (double t = 990; t < 1040; t += 10)
+            window.push_back(bucket(t, ccd0, ccd1, 1000, 0, 0, crossPerBucket));
+        f.tl.appendCpuBuckets(window);
+    };
+
+    Fixture usual(Bound::Cpu);
+    setup(usual, 9600, 400, 50); // the spike frame looks like every other frame
+    CHECK(attribute(usual.spike, usual.frame, usual.tl).cause == Cause::GameCpu);
+
+    Fixture off(Bound::Cpu);
+    setup(off, 3000, 7000, 50); // 70% off the V-Cache CCD vs 4% normally
+    const auto a = attribute(off.spike, off.frame, off.tl);
+    CHECK(a.cause == Cause::CcdScheduling);
+    CHECK(a.detail.find("normally 4%") != std::string::npos);
+
+    Fixture hop(Bound::Cpu);
+    setup(hop, 9600, 400, 400); // 8x the usual migration rate
+    CHECK(attribute(hop.spike, hop.frame, hop.tl).cause == Cause::CcdScheduling);
+}
+
+void stutterPattern()
+{
+    // 15 min, 60 spikes: 40 in the first 2 minutes + 20 spread out.
+    std::vector<double> times;
+    for (int i = 0; i < 40; ++i)
+        times.push_back(1.0 + i * 3.0);
+    for (int i = 0; i < 20; ++i)
+        times.push_back(150.0 + i * 37.0);
+    auto [f1, s1] = makeRun(900, times);
+    auto pf = stutterPatternFindings(f1, s1);
+    CHECK(pf.size() == 1 && pf[0].title == "Stutter comes in bursts");
+    if (!pf.empty())
+        CHECK(pf[0].detail.find("0:00–2:00") != std::string::npos);
+
+    std::vector<double> even;
+    for (int i = 0; i < 30; ++i)
+        even.push_back(10.0 + i * 29.0);
+    auto [f2, s2] = makeRun(900, even);
+    pf = stutterPatternFindings(f2, s2);
+    CHECK(pf.size() == 1 && pf[0].title == "Stutter is spread evenly");
+
+    auto [f3, s3] = makeRun(60, times); // too short
+    CHECK(stutterPatternFindings(f3, s3).empty());
+}
+
 } // namespace
 
 int main()
@@ -981,6 +1048,9 @@ int main()
         {"correlateAmdThrottle", correlateAmdThrottle},
         {"describeHelpers", describeHelpers},
         {"correlateShaderCompile", correlateShaderCompile},
+        {"perfLimitCounter", perfLimitCounter},
+        {"ccdRelativeToSession", ccdRelativeToSession},
+        {"stutterPattern", stutterPattern},
     };
 
     for (const auto& [name, fn] : tests) {

@@ -1,6 +1,7 @@
 #include "core/Correlator.h"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <map>
 #include <numeric>
@@ -300,7 +301,7 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
     // 6. CPU clocks capped.
     if (cpuSide && ev.maxCpuPerfLimitPct && *ev.maxCpuPerfLimitPct >= cfg.cpuPerfLimitPct) {
         return make(Cause::CpuThrottle, Side::System, 0.5,
-                    std::format("CPU performance limited by {:.0f}%", *ev.maxCpuPerfLimitPct));
+                    std::format("CPU performance capped by {:.0f}% (power policy, power or thermal limit)", *ev.maxCpuPerfLimitPct));
     }
 
     // 7. Another process hogged the CPU.
@@ -316,13 +317,28 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
     // 8. X3D: game threads off the V-Cache CCD or hopping between CCDs.
     const auto& topo = tl.topology();
     if (cpuSide && ev.hasCpuData && topo.hasAsymmetricCache()) {
+        const auto vc = static_cast<std::size_t>(topo.vcacheCcd);
         const double total = std::accumulate(ev.gameUsByCcd.begin(), ev.gameUsByCcd.end(), 0.0);
-        const double off = total - ev.gameUsByCcd[static_cast<std::size_t>(topo.vcacheCcd)];
-        const double offShare = total > 0.0 ? off / total : 0.0;
-        if ((total > 0.0 && offShare >= cfg.ccdOffShare) || ev.gameCrossCcdMigrations >= cfg.ccdMigrations) {
+        const double offShare = total > 0.0 ? (total - ev.gameUsByCcd[vc]) / total : 0.0;
+
+        // The session's normal behaviour
+        const auto& all = tl.gameUsByCcdTotal();
+        const double sessionTotal = std::accumulate(all.begin(), all.end(), 0.0);
+        const double sessionOff = sessionTotal > 0.0 ? (sessionTotal - all[vc]) / sessionTotal : 0.0;
+        const double sessionRate = tl.bucketCoverageUs() > 0.0
+                                       ? static_cast<double>(tl.gameCrossCcdMigrationsTotal()) / tl.bucketCoverageUs()
+                                       : 0.0;
+        const double windowRate = ev.windowUs > 0.0 ? ev.gameCrossCcdMigrations / ev.windowUs : 0.0;
+
+        const bool offCcd = total > 0.0 && offShare >= cfg.ccdOffShare && offShare >= sessionOff + cfg.ccdOffShareAboveNormal;
+        const bool hopping = ev.gameCrossCcdMigrations >= cfg.ccdMigrationsMin && sessionRate > 0.0 &&
+                             windowRate >= cfg.ccdMigrationFactor * sessionRate;
+        if (offCcd || hopping) {
             return make(Cause::CcdScheduling, Side::System, 0.45,
-                        std::format("{:.0f}% of game CPU time off the V-Cache CCD, {} cross-CCD migrations",
-                                    offShare * 100.0, ev.gameCrossCcdMigrations));
+                        std::format("{:.0f}% of game CPU time off the V-Cache CCD (normally {:.0f}%), {} cross-CCD "
+                                    "migrations ({:.1f}× the usual rate)",
+                                    offShare * 100.0, sessionOff * 100.0, ev.gameCrossCcdMigrations,
+                                    sessionRate > 0.0 ? windowRate / sessionRate : 0.0));
         }
     }
 
@@ -430,10 +446,13 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
         const double total = std::accumulate(byCcd.begin(), byCcd.end(), 0.0);
         if (total > 0.0) {
             const double onVcache = byCcd[static_cast<std::size_t>(topo.vcacheCcd)] / total;
-            const auto detail = std::format("{:.0f}% of game CPU time on the V-Cache CCD (CCD{}, {} MB L3), {} cross-CCD migrations",
+            const double perSecond = tl.bucketCoverageUs() > 0.0
+                                         ? static_cast<double>(tl.gameCrossCcdMigrationsTotal()) * 1e6 / tl.bucketCoverageUs()
+                                         : 0.0;
+            const auto detail = std::format("{:.0f}% of game CPU time on the V-Cache CCD (CCD{}, {} MB L3); game threads "
+                                            "switch CCD ~{:.0f} times per second",
                                             onVcache * 100.0, topo.vcacheCcd,
-                                            topo.l3KBOfCcd[static_cast<std::size_t>(topo.vcacheCcd)] / 1024,
-                                            tl.gameCrossCcdMigrationsTotal());
+                                            topo.l3KBOfCcd[static_cast<std::size_t>(topo.vcacheCcd)] / 1024, perSecond);
             if (onVcache >= 0.8)
                 out.push_back({L::Good, "Game stays on the V-Cache CCD", detail});
             else if (onVcache >= 0.6)
@@ -555,10 +574,72 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
         }
 
         if (maxLimit && *maxLimit >= cfg.cpuPerfLimitPct)
-            out.push_back({L::Warning, "CPU clocks were limited", std::format("Performance limit up to {:.0f}%", *maxLimit)});
+            out.push_back({L::Warning, "CPU clocks were limited", std::format("CPU performance capped by up to {:.0f}% (power policy, power or thermal limit)", *maxLimit)});
     }
 
     std::stable_sort(out.begin(), out.end(), [](const Finding& a, const Finding& b) { return a.level > b.level; });
+    return out;
+}
+
+std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames, std::span<const Spike> spikes,
+                                            double binSeconds)
+{
+    using L = Finding::Level;
+    std::vector<Finding> out;
+    if (frames.empty() || spikes.size() < 10)
+        return out;
+    const double duration = frames.back().timeSeconds;
+    const auto binCount = static_cast<std::size_t>(std::ceil(duration / binSeconds));
+    if (duration < 180.0 || binCount < 6)
+        return out; // too short to say anything about a pattern
+
+    std::vector<std::size_t> bins(binCount, 0);
+    for (const auto& s : spikes)
+        ++bins[std::min(binCount - 1, static_cast<std::size_t>(s.timeSeconds / binSeconds))];
+
+    // Fewest bins that hold 60% of the spikes
+    std::vector<std::size_t> order(binCount);
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    std::ranges::sort(order, [&](std::size_t a, std::size_t b) { return bins[a] > bins[b]; });
+    std::size_t covered = 0, used = 0;
+    std::vector<std::size_t> busiest;
+    while (used < binCount && 10 * covered < 6 * spikes.size()) {
+        covered += bins[order[used]];
+        busiest.push_back(order[used]);
+        ++used;
+    }
+    const double binShare = static_cast<double>(used) / static_cast<double>(binCount);
+    const double spikeShare = static_cast<double>(covered) / static_cast<double>(spikes.size());
+
+    const auto clock = [](double sec) {
+        const auto t = static_cast<int>(sec + 0.5);
+        return std::format("{}:{:02}", t / 60, t % 60);
+    };
+
+    if (binShare <= 0.25) {
+        // Merge neighbouring bins into ranges for the text.
+        std::ranges::sort(busiest);
+        std::string ranges;
+        for (std::size_t i = 0; i < busiest.size();) {
+            std::size_t j = i;
+            while (j + 1 < busiest.size() && busiest[j + 1] == busiest[j] + 1)
+                ++j;
+            if (!ranges.empty())
+                ranges += ", ";
+            ranges += clock(static_cast<double>(busiest[i]) * binSeconds) + "–" +
+                      clock(std::min(duration, static_cast<double>(busiest[j] + 1) * binSeconds));
+            i = j + 1;
+        }
+        out.push_back({L::Info, "Stutter comes in bursts",
+                       std::format("{:.0f}% of spikes fall in {:.0f}% of the session ({}). Typical for loading, asset "
+                                   "streaming or shader compilation when entering new areas, i.e. the game",
+                                   spikeShare * 100.0, binShare * 100.0, ranges)});
+    } else if (binShare >= 0.5) {
+        out.push_back({L::Info, "Stutter is spread evenly",
+                       std::format("Spikes are spread over the whole session ({:.1f} per minute). Points to something "
+                                   "constant: a system issue, or ongoing game work",
+                                   static_cast<double>(spikes.size()) * 60.0 / duration)});
+    }
     return out;
 }
 

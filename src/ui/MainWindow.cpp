@@ -836,9 +836,14 @@ void MainWindow::saveDiagnostics()
 
 std::vector<core::Finding> MainWindow::currentFindings() const
 {
-    if (m_loadedFindings)
-        return *m_loadedFindings;
-    return core::sessionFindings(m_timeline, m_latency.empty() ? nullptr : &m_latency, m_correlatorConfig);
+    auto findings = m_loadedFindings ? *m_loadedFindings
+                                     : core::sessionFindings(m_timeline, m_latency.empty() ? nullptr : &m_latency,
+                                                             m_correlatorConfig);
+    // The stutter pattern is recomputed from the frames (also for older saved sessions).
+    std::erase_if(findings, [](const core::Finding& f) { return f.title.starts_with("Stutter "); });
+    const auto pattern = core::stutterPatternFindings(m_session.frames(), m_session.spikes());
+    findings.insert(findings.end(), pattern.begin(), pattern.end());
+    return findings;
 }
 
 std::vector<core::ModuleLatency> MainWindow::currentDrivers() const

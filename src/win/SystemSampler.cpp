@@ -283,7 +283,8 @@ struct SystemSampler::Impl {
             if (query && PdhCollectQueryData(query) == ERROR_SUCCESS) {
                 s.availableRamMB = read(cAvail);
                 s.pageInsPerSec = read(cPageIn);
-                s.cpuPerfLimitPct = read(cLimit);
+                if (const auto v = read(cLimit))
+                    s.cpuPerfLimitPct = core::perfLimitFromCounter(*v);
                 if (const auto bytes = readSum(cVram))
                     s.gameVramMB = *bytes / (1024.0 * 1024.0);
             }

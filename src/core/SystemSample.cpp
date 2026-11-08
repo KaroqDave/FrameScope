@@ -18,6 +18,12 @@ CpuTopology makeTopology(const std::vector<std::uint8_t>& ccdOfCpu, const std::v
     return t;
 }
 
+double perfLimitFromCounter(double counterValue) noexcept
+{
+    // Turbo/boost can push the counter above 100; that's no limit either.
+    return std::clamp(100.0 - counterValue, 0.0, 100.0);
+}
+
 std::string describe(const SystemSample& s)
 {
     std::string out;
@@ -32,7 +38,7 @@ std::string describe(const SystemSample& s)
     if (s.pageInsPerSec)
         add(std::format("page-ins {:.0f}/s", *s.pageInsPerSec));
     if (s.cpuPerfLimitPct)
-        add(std::format("CPU perf limit {:.0f}%", *s.cpuPerfLimitPct));
+        add(std::format("CPU capped by {:.0f}%", *s.cpuPerfLimitPct));
     if (s.gameVramMB || s.vramTotalMB)
         add(std::format("game VRAM {}/{} GB", s.gameVramMB ? std::format("{:.1f}", *s.gameVramMB / 1024.0) : std::string{"-"},
                         s.vramTotalMB ? std::format("{:.1f}", *s.vramTotalMB / 1024.0) : std::string{"-"}));

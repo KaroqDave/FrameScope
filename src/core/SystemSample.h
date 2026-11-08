@@ -68,7 +68,7 @@ struct SystemSample {
     std::optional<double> availableRamMB;
     std::optional<double> totalRamMB;
     std::optional<double> pageInsPerSec;
-    std::optional<double> cpuPerfLimitPct; // "% Performance Limit": >0 = clocks capped
+    std::optional<double> cpuPerfLimitPct; // how much CPU performance is capped (0 = none), see perfLimitFromCounter
     std::optional<double> gameVramMB;      // dedicated VRAM used by the game
     std::optional<double> vramTotalMB;
     std::optional<GpuSample> gpu;          // NVIDIA (NVML) only for now
@@ -97,6 +97,10 @@ struct CpuTopology {
     [[nodiscard]] std::size_t ccdCount() const noexcept { return l3KBOfCcd.size(); }
     [[nodiscard]] bool hasAsymmetricCache() const noexcept { return vcacheCcd >= 0; }
 };
+
+// Windows' "% Performance Limit" counter is the performance the CPU can still
+// deliver as a share of nominal (100 = no limit). Returns how much is capped.
+double perfLimitFromCounter(double counterValue) noexcept;
 
 // One-line human-readable summary, for logs and diagnostics.
 std::string describe(const SystemSample& sample);
