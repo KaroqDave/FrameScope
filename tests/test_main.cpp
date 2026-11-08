@@ -462,6 +462,15 @@ void latencyStats()
 // ---------------------------------------------------------------------------
 // M3: samples, CPU buckets, topology, new rules, findings
 // ---------------------------------------------------------------------------
+GpuSample gpu(double clockMHz, double tempC, std::uint64_t reasons)
+{
+    GpuSample g;
+    g.coreClockMHz = clockMHz;
+    g.temperatureC = tempC;
+    g.reasons = reasons;
+    return g;
+}
+
 SystemSample sample(double atMs)
 {
     SystemSample s;
@@ -510,7 +519,7 @@ void correlateGpuThrottle()
 {
     Fixture f(Bound::Gpu);
     auto s = sample(1010);
-    s.gpu = GpuSample{1200, 88, 400, gpu_reason::HwThermal | gpu_reason::SwPowerCap};
+    s.gpu = gpu(1200, 88, gpu_reason::HwThermal | gpu_reason::SwPowerCap);
     f.tl.appendSamples(std::span{&s, 1});
     auto a = attribute(f.spike, f.frame, f.tl);
     CHECK(a.cause == Cause::GpuThrottle && a.side == Side::System);
@@ -620,7 +629,7 @@ void findings()
         s.totalRamMB = 65536;
         s.gameVramMB = 20000;
         s.vramTotalMB = 32607;
-        s.gpu = GpuSample{2700, 70, 500, i == 3 ? gpu_reason::HwThermal : gpu_reason::SwPowerCap};
+        s.gpu = gpu(2700, 70, i == 3 ? gpu_reason::HwThermal : gpu_reason::SwPowerCap);
         ss.push_back(s);
     }
     tl.appendSamples(ss);
@@ -804,6 +813,75 @@ void backgroundFinding()
         CHECK(it->detail.find("obs64.exe") != std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// AMD: inferred GPU throttling
+// ---------------------------------------------------------------------------
+GpuSample amd(double clock, double usage, double hotspot = 80.0)
+{
+    GpuSample g;
+    g.coreClockMHz = clock;
+    g.usagePct = usage;
+    g.temperatureC = 65.0;
+    g.hotspotC = hotspot;
+    g.driverReportsReasons = false;
+    return g;
+}
+
+void gpuThrottleInference()
+{
+    GpuThrottleInference inf;
+    for (int i = 0; i < 10; ++i) {
+        auto g = amd(2900 + (i % 3) * 20, 98);
+        inf.apply(g);
+        CHECK(g.reasons == 0);
+    }
+    auto idle = amd(500, 20); // low load: low clocks are fine
+    inf.apply(idle);
+    CHECK(idle.reasons == 0);
+
+    auto drop = amd(1900, 99); // full load, ~35% below usual
+    inf.apply(drop);
+    CHECK(drop.reasons & gpu_reason::ClockDrop);
+
+    auto normal = amd(2850, 97, 107); // normal clock, hot spot high
+    inf.apply(normal);
+    CHECK(!(normal.reasons & gpu_reason::ClockDrop));
+    CHECK(normal.reasons & gpu_reason::HotspotHigh);
+
+    // Not judged before warm-up
+    GpuThrottleInference fresh;
+    auto early = amd(1000, 99);
+    fresh.apply(early);
+    CHECK(early.reasons == 0);
+}
+
+void correlateAmdThrottle()
+{
+    Fixture f(Bound::Gpu);
+    auto s = sample(1010);
+    auto g = amd(1900, 99, 108);
+    g.reasons = gpu_reason::ClockDrop | gpu_reason::HotspotHigh;
+    s.gpu = g;
+    f.tl.appendSamples(std::span{&s, 1});
+    const auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause == Cause::GpuThrottle);
+    CHECK(near(a.confidence, 0.65)); // inferred: a bit less sure than driver-reported
+    CHECK(a.detail.find("clock drop under full load") != std::string::npos);
+    CHECK(a.detail.find("108") != std::string::npos); // hotspot shown
+
+    // Hotspot alone is not a cause
+    Fixture h(Bound::Gpu);
+    g.reasons = gpu_reason::HotspotHigh;
+    s.gpu = g;
+    h.tl.appendSamples(std::span{&s, 1});
+    CHECK(attribute(h.spike, h.frame, h.tl).cause == Cause::GameGpu);
+
+    // Findings mention hotspot
+    const auto fs = sessionFindings(h.tl, nullptr);
+    CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "GPU hotspot near its limit"; }));
+    CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "No GPU throttling"; }));
+}
+
 } // namespace
 
 int main()
@@ -841,6 +919,8 @@ int main()
         {"compareRandom", compareRandom},
         {"htmlReport", htmlReport},
         {"backgroundFinding", backgroundFinding},
+        {"gpuThrottleInference", gpuThrottleInference},
+        {"correlateAmdThrottle", correlateAmdThrottle},
     };
 
     for (const auto& [name, fn] : tests) {

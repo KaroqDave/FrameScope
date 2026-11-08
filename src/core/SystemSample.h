@@ -19,15 +19,45 @@ constexpr std::uint64_t HwThermal = 0x40;
 constexpr std::uint64_t HwPowerBrake = 0x80;
 constexpr std::uint64_t DisplayClock = 0x100;
 
+// Inferred by FrameScope when the driver doesn't report reasons (AMD/ADLX).
+constexpr std::uint64_t ClockDrop = 0x10000;   // clock fell well below its usual level under full load
+constexpr std::uint64_t HotspotHigh = 0x20000; // hotspot near the throttle point (informational)
+
 // Reasons that mean real, sudden clock drops worth blaming.
-constexpr std::uint64_t Harmful = HwSlowdown | SwThermal | HwThermal | HwPowerBrake;
+constexpr std::uint64_t Harmful = HwSlowdown | SwThermal | HwThermal | HwPowerBrake | ClockDrop;
 } // namespace gpu_reason
 
 struct GpuSample {
     double coreClockMHz = 0.0;
     double temperatureC = 0.0;
     double powerW = 0.0;
-    std::uint64_t reasons = 0; // gpu_reason bits
+    std::uint64_t reasons = 0;           // gpu_reason bits
+    std::optional<double> hotspotC;      // junction temperature (AMD)
+    std::optional<double> usagePct;      // GPU load
+    bool driverReportsReasons = true;    // false: reasons are inferred (ClockDrop/HotspotHigh)
+};
+
+// For GPUs without throttle reasons: flags a clock drop under full load and a
+// hotspot near the limit, from the samples alone.
+class GpuThrottleInference {
+public:
+    struct Config {
+        double busyUsagePct = 90.0;  // "full load"
+        double dropRatio = 0.75;     // clock below this share of the usual full-load clock
+        int warmupSamples = 8;       // full-load samples needed before judging
+        double hotspotHighC = 105.0;
+    };
+
+    GpuThrottleInference() = default;
+    explicit GpuThrottleInference(Config cfg) : m_cfg(cfg) {}
+
+    // Adds ClockDrop / HotspotHigh to sample.reasons where they apply.
+    void apply(GpuSample& sample);
+
+private:
+    Config m_cfg{};
+    double m_typicalBusyClock = 0.0; // slow-moving average of full-load clocks
+    int m_busySamples = 0;
 };
 
 // Periodic system snapshot (a few per second). Every field is optional:

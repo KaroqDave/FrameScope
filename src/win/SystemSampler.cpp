@@ -2,6 +2,10 @@
 
 #ifdef _WIN32
 
+#ifdef FRAMESCOPE_HAVE_ADLX
+#include "win/AdlxGpu.h"
+#endif
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -19,6 +23,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -170,7 +175,27 @@ struct SystemSampler::Impl {
 
     void run()
     {
+        // GPU sensors: NVIDIA via NVML, otherwise AMD via ADLX.
         Nvml nvml;
+#ifdef FRAMESCOPE_HAVE_ADLX
+        std::unique_ptr<AdlxGpu> adlx;
+        if (!nvml.ok())
+            adlx = std::make_unique<AdlxGpu>();
+        const bool amdOk = adlx && adlx->ok();
+        const std::string amdName = amdOk ? adlx->deviceName() : std::string{};
+#else
+        const bool amdOk = false;
+        const std::string amdName;
+#endif
+        const auto gpuSample = [&]() -> std::optional<core::GpuSample> {
+            if (nvml.ok())
+                return nvml.sample();
+#ifdef FRAMESCOPE_HAVE_ADLX
+            if (amdOk)
+                return adlx->sample();
+#endif
+            return std::nullopt;
+        };
         const auto vramTotal = queryVramTotalMB();
 
         MEMORYSTATUSEX mem{};
@@ -193,7 +218,12 @@ struct SystemSampler::Impl {
             std::string s = query ? "PDH" : "PDH unavailable";
             if (vramTotal)
                 s += std::string{", DXGI ("} + std::to_string(static_cast<int>(*vramTotal / 1024.0 + 0.5)) + " GB VRAM)";
-            s += nvml.ok() ? ", NVML (" + nvml.deviceName() + ")" : ", no NVML (GPU sensors off)";
+            if (nvml.ok())
+                s += ", NVML (" + nvml.deviceName() + ")";
+            else if (amdOk)
+                s += ", ADLX (" + amdName + ")";
+            else
+                s += ", no GPU sensors (needs NVML or ADLX)";
             std::lock_guard lock(mutex);
             status = s;
         }
@@ -259,7 +289,7 @@ struct SystemSampler::Impl {
             }
             s.totalRamMB = totalRam;
             s.vramTotalMB = vramTotal;
-            s.gpu = nvml.sample();
+            s.gpu = gpuSample();
             s.qpc = qpcNow();
 
             lock.lock();

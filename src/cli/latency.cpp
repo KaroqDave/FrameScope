@@ -124,9 +124,15 @@ int main(int argc, char** argv)
             line += std::format(" RAM {:.1f}/{:.1f} GB free", *s.availableRamMB / 1024, *s.totalRamMB / 1024);
         if (s.cpuPerfLimitPct)
             line += std::format(", CPU perf limit {:.0f}%", *s.cpuPerfLimitPct);
-        if (s.gpu)
-            line += std::format(", GPU {:.0f} MHz {:.0f} °C {:.0f} W reasons 0x{:x}", s.gpu->coreClockMHz,
-                                s.gpu->temperatureC, s.gpu->powerW, s.gpu->reasons);
+        if (s.gpu) {
+            line += std::format(", GPU {:.0f} MHz {:.0f} °C", s.gpu->coreClockMHz, s.gpu->temperatureC);
+            if (s.gpu->hotspotC)
+                line += std::format(" (hotspot {:.0f} °C)", *s.gpu->hotspotC);
+            line += std::format(" {:.0f} W", s.gpu->powerW);
+            if (s.gpu->usagePct)
+                line += std::format(" {:.0f}% load", *s.gpu->usagePct);
+            line += std::format(" reasons 0x{:x}{}", s.gpu->reasons, s.gpu->driverReportsReasons ? "" : " (inferred)");
+        }
         out("{}", line);
     }
     out("CPU scheduling buckets: {} (expect ~100 per second)", cpuBuckets);

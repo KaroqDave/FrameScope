@@ -13,6 +13,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(FRAMESCOPE_BUILD_GUI   "Build the Qt GUI"            ON)
 option(FRAMESCOPE_BUILD_TESTS "Build the unit tests"        ON)
 option(FRAMESCOPE_BUILD_CLI   "Build the command-line tool" ON)
+# ADLX is built and supported by AMD for MSVC only; MinGW can opt in.
+if(MSVC)
+    set(FRAMESCOPE_ADLX_DEFAULT ON)
+else()
+    set(FRAMESCOPE_ADLX_DEFAULT OFF)
+endif()
+option(FRAMESCOPE_WITH_ADLX "AMD GPU sensors via ADLX (Windows; downloads the SDK at configure time)" ${FRAMESCOPE_ADLX_DEFAULT})
 
 if(MSVC)
     add_compile_options(/W4 /permissive- /utf-8)
@@ -66,6 +73,36 @@ target_link_libraries(framescope_platform PUBLIC framescope_core)
 if(WIN32)
     target_link_libraries(framescope_platform PRIVATE advapi32 pdh dxgi)
     target_compile_definitions(framescope_platform PRIVATE UNICODE _UNICODE)
+endif()
+
+# AMD ADLX SDK. Its license only allows distributing compiled code, so it is
+# downloaded here (pinned commit) instead of being kept in this repository.
+if(WIN32 AND FRAMESCOPE_WITH_ADLX)
+    include(FetchContent)
+    FetchContent_Declare(adlx
+        GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/ADLX.git
+        GIT_TAG        32b5a740d42295c5dfe9026b9f52683da0f3af91
+    )
+    FetchContent_MakeAvailable(adlx) # no CMakeLists.txt in the SDK: just downloads it
+
+    set(ADLX_SDK_SOURCES
+        ${adlx_SOURCE_DIR}/SDK/ADLXHelper/Windows/Cpp/ADLXHelper.cpp
+        ${adlx_SOURCE_DIR}/SDK/Platform/Windows/WinAPIs.cpp
+    )
+    # Third-party code: don't drown the build in its warnings.
+    if(MSVC)
+        set_source_files_properties(${ADLX_SDK_SOURCES} PROPERTIES COMPILE_OPTIONS "/W0")
+    else()
+        set_source_files_properties(${ADLX_SDK_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+    endif()
+
+    target_sources(framescope_platform PRIVATE src/win/AdlxGpu.h src/win/AdlxGpu.cpp ${ADLX_SDK_SOURCES})
+    target_include_directories(framescope_platform SYSTEM PRIVATE ${adlx_SOURCE_DIR}/SDK)
+    target_compile_definitions(framescope_platform PRIVATE FRAMESCOPE_HAVE_ADLX)
+    message(STATUS "FrameScope: AMD ADLX sensors enabled")
+    if(NOT MSVC)
+        message(WARNING "ADLX is only supported by AMD with MSVC; MinGW builds may not work with it")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

@@ -94,6 +94,8 @@ std::string gpuReasonText(std::uint64_t r)
     add(gpu_reason::SwThermal, "SW thermal");
     add(gpu_reason::HwPowerBrake, "power brake");
     add(gpu_reason::HwSlowdown, "HW slowdown");
+    add(gpu_reason::ClockDrop, "clock drop under full load");
+    add(gpu_reason::HotspotHigh, "hotspot near limit");
     return out;
 }
 
@@ -172,7 +174,7 @@ WindowEvidence gatherEvidence(const EventTimeline& tl, std::int64_t from, std::i
         maxOpt(ev.vramTotalMB, s->vramTotalMB);
         if (s->gpu) {
             ev.gpuReasons |= s->gpu->reasons;
-            ev.gpuMaxTempC = std::max(ev.gpuMaxTempC, s->gpu->temperatureC);
+            ev.gpuMaxTempC = std::max(ev.gpuMaxTempC, s->gpu->hotspotC.value_or(s->gpu->temperatureC));
             ev.gpuMinClockMHz = ev.gpuMinClockMHz == 0.0 ? s->gpu->coreClockMHz
                                                          : std::min(ev.gpuMinClockMHz, s->gpu->coreClockMHz);
         }
@@ -234,8 +236,11 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
 
     // 2. GPU clocks dropped hard (thermal, power brake, HW slowdown).
     if (ev.gpuReasons & gpu_reason::Harmful) {
-        return make(Cause::GpuThrottle, Side::System, spike.bound == Bound::Gpu ? 0.75 : 0.5,
-                    std::format("GPU {}: {:.0f} MHz, {:.0f} °C", gpuReasonText(ev.gpuReasons),
+        // Inferred clock drops (AMD) are weaker evidence than driver-reported reasons.
+        const bool reported = (ev.gpuReasons & gpu_reason::Harmful & ~gpu_reason::ClockDrop) != 0;
+        const double conf = (spike.bound == Bound::Gpu ? 0.75 : 0.5) - (reported ? 0.0 : 0.1);
+        return make(Cause::GpuThrottle, Side::System, conf,
+                    std::format("GPU {}: {:.0f} MHz, {:.0f} °C", gpuReasonText(ev.gpuReasons & ~gpu_reason::HotspotHigh),
                                 ev.gpuMinClockMHz, ev.gpuMaxTempC));
     }
 
@@ -442,14 +447,21 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
 
     // ---- Samples: GPU, RAM, VRAM, CPU limits
     const auto& samples = tl.samples();
-    std::size_t gpuSamples = 0, gpuThrottled = 0;
+    std::size_t gpuSamples = 0, gpuThrottled = 0, hotspotHigh = 0;
     std::uint64_t reasons = 0;
     double maxTemp = 0.0;
+    std::optional<double> maxHotspot;
+    bool inferred = false;
     std::optional<double> minRam, totalRam, maxVram, vramTotal, maxLimit;
     for (const auto& s : samples) {
         if (s.gpu) {
             ++gpuSamples;
             maxTemp = std::max(maxTemp, s.gpu->temperatureC);
+            if (s.gpu->hotspotC)
+                maxHotspot = std::max(maxHotspot.value_or(0.0), *s.gpu->hotspotC);
+            if (s.gpu->reasons & gpu_reason::HotspotHigh)
+                ++hotspotHigh;
+            inferred = inferred || !s.gpu->driverReportsReasons;
             if (s.gpu->reasons & gpu_reason::Harmful) {
                 ++gpuThrottled;
                 reasons |= s.gpu->reasons;
@@ -468,14 +480,23 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
     }
 
     if (!samples.empty()) {
+        const auto temps = std::format("max {:.0f} °C{}", maxTemp,
+                                       maxHotspot ? std::format(", hotspot {:.0f} °C", *maxHotspot) : std::string{});
         if (gpuSamples == 0) {
-            out.push_back({L::Info, "No GPU sensor data", "Clock/thermal checks need an NVIDIA GPU for now (AMD via ADLX is planned)"});
+            out.push_back({L::Info, "No GPU sensor data", "GPU sensors need NVML (NVIDIA) or ADLX (AMD) from the graphics driver"});
         } else if (gpuThrottled == 0) {
-            out.push_back({L::Good, "No GPU throttling", std::format("Max GPU temperature {:.0f} °C", maxTemp)});
+            out.push_back({L::Good, "No GPU throttling",
+                           std::format("{}{}", inferred ? "No clock drops under full load, " : "", temps)});
         } else {
             const double share = static_cast<double>(gpuThrottled) / static_cast<double>(gpuSamples);
             out.push_back({share > 0.05 ? L::Problem : L::Warning, "GPU throttling",
-                           std::format("{} in {:.0f}% of samples, max {:.0f} °C", gpuReasonText(reasons), share * 100.0, maxTemp)});
+                           std::format("{} in {:.0f}% of samples, {}", gpuReasonText(reasons & ~gpu_reason::HotspotHigh),
+                                       share * 100.0, temps)});
+        }
+        if (hotspotHigh > 0) {
+            out.push_back({L::Warning, "GPU hotspot near its limit",
+                           std::format("{} samples at or above 105 °C (max {:.0f} °C); check airflow and fan curve",
+                                       hotspotHigh, maxHotspot.value_or(0.0))});
         }
 
         if (minRam) {

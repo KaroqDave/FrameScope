@@ -67,6 +67,7 @@ More signals, sampled 4× per second or built from context switches:
 | PDH (English counter names, works on any Windows language) | Available RAM, page-ins/s, CPU `% Performance Limit`, the game's dedicated VRAM | Low memory, CPU throttling, VRAM full |
 | DXGI | Total VRAM | VRAM full |
 | NVML (from the NVIDIA driver, loaded at runtime) | GPU clock, temperature, power, throttle reasons | GPU throttling |
+| ADLX (from the AMD driver, loaded at runtime) | GPU clock, temperature, hotspot, power, load | GPU throttling (inferred) |
 
 New causes per spike, checked in this order after driver latency:
 
@@ -86,7 +87,25 @@ time ran on the V-Cache CCD, GPU throttling, minimum free RAM, peak VRAM, CPU li
 Spikes now get their cause about 4 s after they happen. Context-switch data arrives ~2 s late
 because each CPU's ETW buffer is delivered separately.
 
-AMD GPUs (ADLX) are not covered yet; RAM, VRAM and CPU checks work on any system.
+### AMD GPUs
+
+On AMD cards the GPU sensors come from **ADLX**, which ships with the Adrenalin driver
+(`amdadlx64.dll`): clock, temperature, hotspot, board power and load.
+
+ADLX doesn't report *why* clocks drop, so FrameScope infers it:
+
+| Flag | When | Counts as a cause |
+|---|---|---|
+| Clock drop under full load | GPU load ≥ 90% and clock < 75% of its usual full-load clock | Yes (GPU throttling, slightly lower confidence than NVIDIA's driver-reported reasons) |
+| Hotspot near limit | Hotspot ≥ 105 °C | No, shown as a finding (check airflow and fan curve) |
+
+On single-CCD CPUs (e.g. 9800X3D, 9850X3D) the CCD check is skipped: there's only one cache.
+
+**Build notes:** the ADLX SDK is downloaded by CMake at configure time (pinned commit) instead of
+living in this repository, because its license only allows distributing compiled code. It's on
+by default for MSVC builds (what CI uses) and opt-in for MinGW (`-DFRAMESCOPE_WITH_ADLX=ON`),
+since AMD only supports MSVC. `-DFRAMESCOPE_WITH_ADLX=OFF` builds without it. If you publish
+binaries that include ADLX, its license asks for an end-user license agreement.
 
 ## What M4 adds
 
@@ -185,7 +204,7 @@ framescope-cli run1.fscope --compare run2.fscope
 src/core/      pure C++: CSV parser, spike detector, stats, event timeline, correlator,
                session files, run comparison, HTML report
 src/etw/       ETW kernel trace (Windows; stub elsewhere)
-src/win/       system sampler (PDH, DXGI, NVML), CPU topology, process names
+src/win/       system sampler (PDH, DXGI, NVML, ADLX), CPU topology, process names
 src/capture/   PresentMon process wrapper (Qt)
 src/ui/        main window, frame-time graph
 src/cli/       offline analyser, latency check
