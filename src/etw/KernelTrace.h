@@ -28,7 +28,7 @@ struct KernelTraceOptions {
     bool cpuScheduling = true;
     std::vector<std::uint8_t> ccdOfCpu; // from CpuTopology; empty = single CCD
 
-    // File I/O init events -> writes to GPU driver / D3D shader caches
+    // File I/O events -> writes to GPU driver / D3D shader caches
     // (NVIDIA DXCache, AMD DxCache, D3DSCache ...): direct evidence of shader
     // compilation. Moderate volume (every file open/read/write on the system).
     bool shaderCache = true;
@@ -51,13 +51,17 @@ struct TraceDiagnostics {
     std::uint64_t threadEvents = 0;
     std::uint64_t imageEvents = 0;
     std::uint64_t fileCreates = 0;
-    std::uint64_t shaderCacheWrites = 0;
+    std::uint64_t shaderCacheOpens = 0;      // file opens/creates in a shader cache folder
+    std::uint64_t shaderCacheNames = 0;      // file-name events for shader cache files
+    std::uint64_t shaderCacheWrites = 0;     // writes to them (file API level)
+    std::uint64_t shaderCacheDiskWrites = 0; // ... and flushed to disk (also catches mapped files)
     std::uint64_t malformed = 0;         // known event, but too short / implausible
     std::uint64_t cpuBucketsFinished = 0;
     std::uint64_t knownThreads = 0;
     std::uint64_t knownDrivers = 0;
     std::uint64_t eventsLost = 0;        // ETW: buffers full
     std::uint64_t realtimeBuffersLost = 0;
+    std::vector<std::string> shaderCachePaths; // first few cache files seen
 };
 
 std::string describe(const TraceDiagnostics& d);

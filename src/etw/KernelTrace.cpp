@@ -18,7 +18,10 @@ std::string describe(const TraceDiagnostics& d)
     out += std::format("Thread events       {} ({} threads known)\n", d.threadEvents, d.knownThreads);
     out += std::format("Image events        {}\n", d.imageEvents);
     out += std::format("File creates        {}\n", d.fileCreates);
-    out += std::format("Shader cache writes {}\n", d.shaderCacheWrites);
+    out += std::format("Shader cache opens  {} (name events {})\n", d.shaderCacheOpens, d.shaderCacheNames);
+    out += std::format("Shader cache writes {} (flushed to disk {})\n", d.shaderCacheWrites, d.shaderCacheDiskWrites);
+    for (const auto& p : d.shaderCachePaths)
+        out += std::format("  cache file: {}\n", p);
     out += std::format("Malformed events    {}\n", d.malformed);
     out += std::format("Events lost         {} (real-time buffers lost {})\n", d.eventsLost, d.realtimeBuffersLost);
     return out;
@@ -45,6 +48,7 @@ std::string describe(const TraceDiagnostics& d)
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <cwctype>
 #include <string>
@@ -77,6 +81,7 @@ constexpr UCHAR kOpStart = 1, kOpEnd = 2, kOpDcStart = 3, kOpDcEnd = 4;
 constexpr UCHAR kOpImageLoad = 10, kOpImageUnload = 2;
 constexpr UCHAR kOpCSwitch = 36;
 constexpr UCHAR kOpFileCreate = 64, kOpFileCleanup = 65, kOpFileClose = 66, kOpFileWrite = 68;
+constexpr UCHAR kOpFileName = 0, kOpFileNameCreate = 32, kOpFileNameDelete = 35, kOpFileNameRundown = 36;
 
 // Lower-case path fragments of known shader caches.
 constexpr const wchar_t* kShaderCacheDirs[] = {
@@ -200,12 +205,13 @@ struct KernelTrace::Impl {
     // Diagnostics counters (written on the callback thread, read anywhere)
     struct Counters {
         std::atomic<std::uint64_t> total{0}, unresolved{0}, hardFaults{0}, diskIo{0}, cswitch{0}, thread{0},
-            image{0}, fileCreates{0}, shaderWrites{0}, malformed{0}, buckets{0}, threads{0}, drivers{0},
-            eventsLost{0}, buffersLost{0};
+            image{0}, fileCreates{0}, shaderOpens{0}, shaderNames{0}, shaderWrites{0}, shaderDiskWrites{0},
+            malformed{0}, buckets{0}, threads{0}, drivers{0}, eventsLost{0}, buffersLost{0};
         void reset()
         {
             for (auto* c : {&total, &unresolved, &hardFaults, &diskIo, &cswitch, &thread, &image, &fileCreates,
-                            &shaderWrites, &malformed, &buckets, &threads, &drivers, &eventsLost, &buffersLost})
+                            &shaderOpens, &shaderNames, &shaderWrites, &shaderDiskWrites, &malformed, &buckets,
+                            &threads, &drivers, &eventsLost, &buffersLost})
                 c->store(0);
         }
     } counters;
@@ -223,8 +229,23 @@ struct KernelTrace::Impl {
     std::uint64_t lastRoutine = 0;
     std::string lastRoutineModule;
 
-    // ---- Shader cache files currently open (callback thread only)
-    std::unordered_map<std::uint64_t, std::uint32_t> shaderCacheFiles; // FileObject -> PID
+    // ---- Shader cache files (callback thread only)
+    std::unordered_map<std::uint64_t, std::uint32_t> shaderCacheFiles; // FileObject (from creates) -> PID
+    std::unordered_set<std::uint64_t> shaderCacheKeys;                 // FileKey/FileObject from name events
+    std::vector<std::string> shaderCachePaths;                         // guarded by mutex
+
+    void rememberPath(const wchar_t* path, std::size_t maxChars)
+    {
+        auto name = narrow(path, maxChars);
+        std::lock_guard lock(mutex);
+        if (shaderCachePaths.size() < 8 && std::ranges::find(shaderCachePaths, name) == shaderCachePaths.end())
+            shaderCachePaths.push_back(std::move(name));
+    }
+
+    bool isCacheObject(std::uint64_t value) const
+    {
+        return shaderCacheFiles.contains(value) || shaderCacheKeys.contains(value);
+    }
 
     // FileIo payloads start with pointer-sized fields; whether TTID is 4 or 8
     // bytes isn't consistent across documentation, so both layouts are tried.
@@ -232,6 +253,25 @@ struct KernelTrace::Impl {
     {
         const auto& h = r.EventHeader;
         const auto headerPid = h.ProcessId != 0xFFFFFFFF ? static_cast<std::uint32_t>(h.ProcessId) : 0u;
+
+        if (op == kOpFileName || op == kOpFileNameCreate || op == kOpFileNameRundown || op == kOpFileNameDelete) {
+            // FileObject (ptr; matches FileKey of I/O events and FileObject of DiskIo), FileName (wchar_t[])
+            if (len < ptr + 2)
+                return bump(counters.malformed);
+            const auto key = readPtr(data, 0, ptr);
+            if (op == kOpFileNameDelete) {
+                shaderCacheKeys.erase(key);
+                return;
+            }
+            const auto* path = reinterpret_cast<const wchar_t*>(data + ptr);
+            const auto chars = (len - ptr) / sizeof(wchar_t);
+            if (isShaderCachePath(path, chars)) {
+                bump(counters.shaderNames);
+                shaderCacheKeys.insert(key);
+                rememberPath(path, chars);
+            }
+            return;
+        }
 
         if (op == kOpFileCreate) {
             // IrpPtr (ptr), TTID (ptr|4), FileObject (ptr), CreateOptions (4),
@@ -245,18 +285,21 @@ struct KernelTrace::Impl {
                 const auto* path = reinterpret_cast<const wchar_t*>(data + pathOff);
                 if (path[0] != L'\\')
                     continue; // wrong layout guess: NT paths start with a backslash
-                if (isShaderCachePath(path, (len - pathOff) / sizeof(wchar_t))) {
+                const auto chars = (len - pathOff) / sizeof(wchar_t);
+                if (isShaderCachePath(path, chars)) {
+                    bump(counters.shaderOpens);
                     std::uint32_t pid = headerPid;
                     if (pid == 0)
                         pid = processOf(static_cast<std::uint32_t>(readPtr(data, ptr, ttid)));
                     shaderCacheFiles[readPtr(data, foOff, ptr)] = pid;
+                    rememberPath(path, chars);
                 }
                 return;
             }
             return bump(counters.malformed);
         }
 
-        if (shaderCacheFiles.empty())
+        if (shaderCacheFiles.empty() && shaderCacheKeys.empty())
             return;
 
         if (op == kOpFileWrite) {
@@ -265,12 +308,18 @@ struct KernelTrace::Impl {
                 const std::size_t foOff = 8 + ptr + ttid;
                 if (len < foOff + 2 * ptr + 4)
                     continue;
-                const auto it = shaderCacheFiles.find(readPtr(data, foOff, ptr));
-                if (it == shaderCacheFiles.end())
+                const auto fileObject = readPtr(data, foOff, ptr);
+                const auto fileKey = readPtr(data, foOff + ptr, ptr);
+                if (!isCacheObject(fileObject) && !isCacheObject(fileKey))
                     continue;
+                std::uint32_t pid = headerPid;
+                if (const auto it = shaderCacheFiles.find(fileObject); pid == 0 && it != shaderCacheFiles.end())
+                    pid = it->second;
+                if (pid == 0)
+                    pid = processOf(static_cast<std::uint32_t>(readPtr(data, 8 + ptr, ttid)));
                 const auto size = read<std::uint32_t>(data, foOff + 2 * ptr);
                 bump(counters.shaderWrites);
-                push({core::EventKind::ShaderCacheWrite, ts, ts, it->second != 0 ? it->second : headerPid, size, {}});
+                push({core::EventKind::ShaderCacheWrite, ts, ts, pid, size, {}});
                 return;
             }
             return;
@@ -278,6 +327,7 @@ struct KernelTrace::Impl {
 
         if (op == kOpFileCleanup || op == kOpFileClose) {
             // IrpPtr (ptr), TTID (ptr|4), FileObject (ptr), FileKey (ptr)
+            // Only the create-based map is per handle; name-event keys stay until the file is deleted.
             for (const std::size_t ttid : {ptr, std::size_t{4}}) {
                 if (len >= ptr + ttid + ptr)
                     shaderCacheFiles.erase(readPtr(data, ptr + ttid, ptr));
@@ -501,6 +551,13 @@ struct KernelTrace::Impl {
             bump(counters.diskIo);
             const std::uint32_t tid = len >= respOff + 12 ? read<std::uint32_t>(data, respOff + 8) : 0;
             push({core::EventKind::DiskIo, ts - response, ts, processOf(tid), bytes, {}});
+
+            // A write reaching a shader cache file on disk (lazy writer or mapped
+            // file flush). Timing lags the compile, so it only feeds the findings.
+            if (op == kOpDiskWrite && isCacheObject(readPtr(data, 24, ptr))) {
+                bump(counters.shaderDiskWrites);
+                push({core::EventKind::ShaderCacheWrite, ts, ts, 0, bytes, "disk"});
+            }
             return;
         }
 
@@ -623,7 +680,7 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     if (options.cpuScheduling)
         m->enableFlags |= EVENT_TRACE_FLAG_CSWITCH;
     if (options.shaderCache)
-        m->enableFlags |= EVENT_TRACE_FLAG_FILE_IO_INIT;
+        m->enableFlags |= EVENT_TRACE_FLAG_FILE_IO_INIT | EVENT_TRACE_FLAG_DISK_FILE_IO;
 
     {
         std::lock_guard lock(m->mutex);
@@ -638,6 +695,11 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     m->lastCpuOfThread.clear();
     m->maxBucketSeen = 0;
     m->shaderCacheFiles.clear();
+    m->shaderCacheKeys.clear();
+    {
+        std::lock_guard lock(m->mutex);
+        m->shaderCachePaths.clear();
+    }
     m->threadToProcess.clear();
     m->modules.clear();
     m->lastRoutine = 0;
@@ -763,7 +825,14 @@ TraceDiagnostics KernelTrace::diagnostics() const
     d.threadEvents = c.thread;
     d.imageEvents = c.image;
     d.fileCreates = c.fileCreates;
+    d.shaderCacheOpens = c.shaderOpens;
+    d.shaderCacheNames = c.shaderNames;
     d.shaderCacheWrites = c.shaderWrites;
+    d.shaderCacheDiskWrites = c.shaderDiskWrites;
+    {
+        std::lock_guard lock(m->mutex);
+        d.shaderCachePaths = m->shaderCachePaths;
+    }
     d.malformed = c.malformed;
     d.cpuBucketsFinished = c.buckets;
     d.knownThreads = c.threads;

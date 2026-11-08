@@ -37,8 +37,7 @@ struct CorrelatorConfig {
     // session's own normal: some CPUs hop thousands of times per second anyway.
     double ccdOffShare = 0.40;       // >= this share of game CPU time off the V-Cache CCD ...
     double ccdOffShareAboveNormal = 0.25; // ... and this much above the session's average share
-    double ccdMigrationFactor = 4.0; // or cross-CCD migrations at >= this × the session's average rate
-    int ccdMigrationsMin = 20;       // ... and at least this many in the frame
+
 
     double shaderAfterMs = 250.0;    // cache writes can land shortly after the compile finished
 

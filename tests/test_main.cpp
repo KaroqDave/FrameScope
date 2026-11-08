@@ -648,6 +648,7 @@ void findings()
     CHECK(find("Game runs on the wrong CCD") != f.end());   // 30% on V-Cache CCD
     CHECK(find("High driver latency") != f.end());
     CHECK(find("GPU throttling") != f.end());               // 1 of 20 samples = 5% -> Warning
+    CHECK(find("GPU throttling")->detail.find("1 of 20 samples (5%)") != std::string::npos);
     if (auto it = find("GPU throttling"); it != f.end())
         CHECK(it->level == Finding::Level::Warning);
     CHECK(find("Enough free RAM") != f.end());
@@ -977,9 +978,10 @@ void ccdRelativeToSession()
     CHECK(a.cause == Cause::CcdScheduling);
     CHECK(a.detail.find("normally 4%") != std::string::npos);
 
+    // A burst of migrations alone (any loading hitch) is not blamed on the CCDs.
     Fixture hop(Bound::Cpu);
     setup(hop, 9600, 400, 400); // 8x the usual migration rate
-    CHECK(attribute(hop.spike, hop.frame, hop.tl).cause == Cause::CcdScheduling);
+    CHECK(attribute(hop.spike, hop.frame, hop.tl).cause == Cause::GameCpu);
 }
 
 void stutterPattern()
@@ -1005,6 +1007,47 @@ void stutterPattern()
 
     auto [f3, s3] = makeRun(60, times); // too short
     CHECK(stutterPatternFindings(f3, s3).empty());
+}
+
+void rareGpuDropsAndDiskFlushes()
+{
+    EventTimeline tl(kFreq);
+    std::vector<SystemSample> ss;
+    for (int i = 0; i < 400; ++i) {
+        auto s = sample(i * 250.0);
+        s.gpu = amd(2900, 98);
+        if (i == 7)
+            s.gpu->reasons = gpu_reason::ClockDrop;
+        ss.push_back(s);
+    }
+    tl.appendSamples(ss);
+    // Shader cache: one game write and two disk flushes (PID 0, "disk")
+    auto w = ev(EventKind::ShaderCacheWrite, 100, 0, 42);
+    w.bytes = 4096;
+    tl.append(std::span{&w, 1});
+    for (int i = 0; i < 2; ++i) {
+        auto d = ev(EventKind::ShaderCacheWrite, 2000 + i, 0, 0, "disk");
+        d.bytes = 1 << 20;
+        tl.append(std::span{&d, 1});
+    }
+    const auto f = sessionFindings(tl, nullptr);
+    const auto find = [&](std::string_view title) {
+        return std::ranges::find_if(f, [&](const Finding& x) { return x.title == title; });
+    };
+    CHECK(find("GPU throttling") == f.end());
+    CHECK(find("Rare GPU clock drops") != f.end());
+    if (auto it = find("Rare GPU clock drops"); it != f.end())
+        CHECK(it->level == Finding::Level::Info && it->detail.find("1 of 400 samples (< 1%)") != std::string::npos);
+    const auto sh = find("Shaders compiled during play");
+    CHECK(sh != f.end());
+    if (sh != f.end())
+        CHECK(sh->detail.starts_with("1 shader cache writes, 2 flushes to disk (2.0 MB)"));
+
+    // Disk flushes have no game PID: they never decide a single spike.
+    Fixture fx(Bound::Cpu);
+    auto d = ev(EventKind::ShaderCacheWrite, 1010, 0, 0, "disk");
+    fx.add(d);
+    CHECK(attribute(fx.spike, fx.frame, fx.tl).cause == Cause::GameCpu);
 }
 
 } // namespace
@@ -1051,6 +1094,7 @@ int main()
         {"perfLimitCounter", perfLimitCounter},
         {"ccdRelativeToSession", ccdRelativeToSession},
         {"stutterPattern", stutterPattern},
+        {"rareGpuDropsAndDiskFlushes", rareGpuDropsAndDiskFlushes},
     };
 
     for (const auto& [name, fn] : tests) {

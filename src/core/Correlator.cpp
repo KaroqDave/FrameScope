@@ -330,10 +330,11 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
                                        : 0.0;
         const double windowRate = ev.windowUs > 0.0 ? ev.gameCrossCcdMigrations / ev.windowUs : 0.0;
 
+        // Only a real shift of game work off the V-Cache CCD counts. Bursts of
+        // migrations alone happen in every loading hitch (many threads wake up),
+        // so they're a symptom, not a cause; they're only reported as detail.
         const bool offCcd = total > 0.0 && offShare >= cfg.ccdOffShare && offShare >= sessionOff + cfg.ccdOffShareAboveNormal;
-        const bool hopping = ev.gameCrossCcdMigrations >= cfg.ccdMigrationsMin && sessionRate > 0.0 &&
-                             windowRate >= cfg.ccdMigrationFactor * sessionRate;
-        if (offCcd || hopping) {
+        if (offCcd) {
             return make(Cause::CcdScheduling, Side::System, 0.45,
                         std::format("{:.0f}% of game CPU time off the V-Cache CCD (normally {:.0f}%), {} cross-CCD "
                                     "migrations ({:.1f}× the usual rate)",
@@ -464,19 +465,27 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
     }
 
     // ---- Shader compilation during play
-    std::size_t shaderWrites = 0;
-    std::uint64_t shaderBytes = 0;
+    // Writes seen at the file API (exact timing) and flushes to disk (delayed,
+    // but also catch memory-mapped caches). Use whichever saw more.
+    std::size_t apiWrites = 0, diskWrites = 0;
+    std::uint64_t apiBytes = 0, diskBytes = 0;
     for (const auto& e : tl.events()) {
-        if (e.kind == EventKind::ShaderCacheWrite) {
-            ++shaderWrites;
-            shaderBytes += e.bytes;
+        if (e.kind != EventKind::ShaderCacheWrite)
+            continue;
+        if (e.module == "disk") {
+            ++diskWrites;
+            diskBytes += e.bytes;
+        } else {
+            ++apiWrites;
+            apiBytes += e.bytes;
         }
     }
-    if (shaderWrites > 0) {
+    if (apiWrites + diskWrites > 0) {
+        const double mb = static_cast<double>(std::max(apiBytes, diskBytes)) / (1024.0 * 1024.0);
         out.push_back({L::Info, "Shaders compiled during play",
-                       std::format("{} shader cache writes ({:.1f} MB). Spikes from this fade once the cache is warm; "
-                                   "compare with a second run of the same scene",
-                                   shaderWrites, static_cast<double>(shaderBytes) / (1024.0 * 1024.0))});
+                       std::format("{} shader cache writes, {} flushes to disk ({:.1f} MB). Spikes from this fade once "
+                                   "the cache is warm; compare with a second run of the same scene",
+                                   apiWrites, diskWrites, mb)});
     }
 
     // ---- Background CPU load (other processes, averaged over the session)
@@ -546,9 +555,13 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
                            std::format("{}{}", inferred ? "No clock drops under full load, " : "", temps)});
         } else {
             const double share = static_cast<double>(gpuThrottled) / static_cast<double>(gpuSamples);
-            out.push_back({share > 0.05 ? L::Problem : L::Warning, "GPU throttling",
-                           std::format("{} in {:.0f}% of samples, {}", gpuReasonText(reasons & ~gpu_reason::HotspotHigh),
-                                       share * 100.0, temps)});
+            const auto how = std::format("{} in {} of {} samples ({}), {}", gpuReasonText(reasons & ~gpu_reason::HotspotHigh),
+                                         gpuThrottled, gpuSamples,
+                                         share < 0.01 ? std::string{"< 1%"} : std::format("{:.0f}%", share * 100.0), temps);
+            if (share < 0.01)
+                out.push_back({L::Info, "Rare GPU clock drops", how + "; too rare to matter on their own"});
+            else
+                out.push_back({share > 0.05 ? L::Problem : L::Warning, "GPU throttling", how});
         }
         if (hotspotHigh > 0) {
             out.push_back({L::Warning, "GPU hotspot near its limit",
