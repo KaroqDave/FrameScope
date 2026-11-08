@@ -8,14 +8,14 @@ at that moment: DPC latency, paging, throttling, background load, CCD placement.
 
 No injection, no overlay hooks. Everything comes from ETW, so it's safe with anti-cheat.
 
-## Status: M3
+## Status: M4
 
 | Milestone | Scope | State |
 |---|---|---|
 | **M1** | PresentMon capture, spike detection, frame-time graph | ✅ done |
 | **M2** | ETW kernel trace: DPC/ISR per driver, hard faults, disk I/O; cause per spike | ✅ done, needs testing on real hardware |
 | **M3** | GPU/CPU throttling, RAM/VRAM pressure, background load, X3D CCD check, findings | ✅ done, needs testing on real hardware |
-| M4 | Baseline tests, repeat-run comparison, verdict report | |
+| **M4** | Idle baseline, run comparison, session files, HTML report | ✅ done |
 
 ## What M1 does
 
@@ -88,6 +88,34 @@ because each CPU's ETW buffer is delivered separately.
 
 AMD GPUs (ADLX) are not covered yet; RAM, VRAM and CPU checks work on any system.
 
+## What M4 adds
+
+| Feature | Where | What it does |
+|---|---|---|
+| Idle baseline | **Idle baseline** button / Tools menu | 30 s system trace without the game: driver latency, background CPU load, RAM, GPU state. Shows whether the PC has problems before a game even runs. |
+| Sessions | File → Save / Open session | `.fscope` file with frames, spikes, causes, findings and driver stats. Plain tab-separated text. |
+| Run comparison | Tools → Compare with earlier run | Compares the current run (run 2) with an earlier one (run 1, `.fscope` or PresentMon CSV). |
+| Report | File → Export report | One self-contained HTML file: verdict, stats, frame-time chart, causes, system checks, baseline, comparison, worst spikes, driver latency. |
+
+**How the comparison decides** (both runs must play the same sequence from the same start,
+e.g. a benchmark or replay):
+
+| Result | Meaning |
+|---|---|
+| Run 2 has ≥ 60% fewer spikes | Shader compilation: it fades once the shader cache is warm (game) |
+| Same rate, ≥ 60% of spikes at the same moments | Game content such as asset streaming or level traversal (game) |
+| Same rate, < 30% at the same moments | Random stutter: the system, or unpredictable game work |
+| Anything else | Inconclusive |
+
+The two runs are lined up automatically: the tool tries offsets up to ±10 s and keeps the one
+where the most spikes coincide (within 0.5 s).
+
+The CLI can do the same offline:
+
+```sh
+framescope-cli run1.fscope --compare run2.csv --report report.html
+```
+
 ### framescope-latency
 
 A LatencyMon-style system check without a game:
@@ -132,6 +160,8 @@ the table to jump to it.
 
 ```sh
 framescope-cli capture.csv --top 10
+framescope-cli session.fscope --report report.html
+framescope-cli run1.fscope --compare run2.fscope
 ```
 
 ## Notes
@@ -152,7 +182,8 @@ framescope-cli capture.csv --top 10
 ## Layout
 
 ```
-src/core/      pure C++: CSV parser, spike detector, stats, event timeline, correlator
+src/core/      pure C++: CSV parser, spike detector, stats, event timeline, correlator,
+               session files, run comparison, HTML report
 src/etw/       ETW kernel trace (Windows; stub elsewhere)
 src/win/       system sampler (PDH, DXGI, NVML), CPU topology, process names
 src/capture/   PresentMon process wrapper (Qt)

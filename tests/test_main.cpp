@@ -1,6 +1,9 @@
 // Minimal dependency-free tests for the core library. Run via `ctest`.
 
 #include "core/CaptureSession.h"
+#include "core/Comparison.h"
+#include "core/Report.h"
+#include "core/SessionFile.h"
 #include "core/Correlator.h"
 #include "core/EventTimeline.h"
 #include "core/LatencyStats.h"
@@ -639,6 +642,168 @@ void findings()
     CHECK(f.front().level == Finding::Level::Problem);      // sorted worst first
 }
 
+// ---------------------------------------------------------------------------
+// M4: session files, run comparison, report, background finding
+// ---------------------------------------------------------------------------
+// A run of `seconds` at 7 ms frames with spikes (45 ms) at the given times.
+std::pair<std::vector<FrameRecord>, std::vector<Spike>> makeRun(double seconds, const std::vector<double>& spikeTimes,
+                                                                Bound bound = Bound::Cpu)
+{
+    CaptureSession cs;
+    std::size_t next = 0;
+    double t = 0.0;
+    while (t < seconds) {
+        double ms = 7.0;
+        if (next < spikeTimes.size() && t >= spikeTimes[next]) {
+            ms = 45.0;
+            ++next;
+        }
+        auto f = bound == Bound::Cpu ? frame(ms, ms * 0.9, 3.0) : frame(ms, 3.0, ms * 0.9);
+        t += ms / 1000.0;
+        f.timeSeconds = t;
+        cs.append(f);
+    }
+    return {cs.frames(), cs.spikes()};
+}
+
+void sessionFileRoundTrip()
+{
+    auto [frames, spikes] = makeRun(10, {2, 5, 8});
+    CHECK(spikes.size() == 3);
+    spikes[0].attribution = Attribution{Cause::DriverLatency, Side::System, 0.8,
+                                        "DPC 2.0 ms in nvlddmkm.sys\twith tab", "nvlddmkm.sys"};
+    SavedSession s;
+    s.application = "cod.exe";
+    s.createdAt = "2026-11-08T20:00:00";
+    s.sensors = "PDH, NVML (RTX 5090)";
+    s.frames = frames;
+    s.spikes = spikes;
+    s.findings = {{Finding::Level::Warning, "Some driver latency", "nvlddmkm.sys reached 1.2 ms"}};
+    ModuleLatency m;
+    m.module = "nvlddmkm.sys";
+    m.dpcCount = 1000;
+    m.maxDpcUs = 1234.5;
+    m.over1ms = 2;
+    s.drivers = {m};
+
+    const auto path = std::filesystem::temp_directory_path() / "framescope_test.fscope";
+    saveSession(path, s);
+    CHECK(isSessionFile(path));
+    const auto r = loadSession(path);
+    std::filesystem::remove(path);
+
+    CHECK(r.application == "cod.exe" && r.sensors == s.sensors && r.createdAt == s.createdAt);
+    CHECK(r.frames.size() == frames.size());
+    CHECK(near(r.frames.back().timeSeconds, frames.back().timeSeconds, 1e-9));
+    CHECK(near(*r.frames[5].cpuBusyMs, *frames[5].cpuBusyMs, 1e-9));
+    CHECK(r.spikes.size() == 3);
+    CHECK(r.spikes[0].attribution && r.spikes[0].attribution->cause == Cause::DriverLatency);
+    CHECK(r.spikes[0].attribution->detail == "DPC 2.0 ms in nvlddmkm.sys with tab"); // tab cleaned
+    CHECK(r.spikes[0].attribution->module == "nvlddmkm.sys");
+    CHECK(!r.spikes[1].attribution);
+    CHECK(near(r.spikes[2].frameTimeMs, 45.0) && r.spikes[2].bound == Bound::Cpu);
+    CHECK(r.findings.size() == 1 && r.findings[0].level == Finding::Level::Warning);
+    CHECK(r.drivers.size() == 1 && near(r.drivers[0].maxDpcUs, 1234.5) && r.drivers[0].over1ms == 2);
+
+    CaptureSession cs;
+    cs.restore(r.frames, r.spikes);
+    CHECK(cs.spikes().size() == 3 && cs.diagnosis().system == 1);
+
+    // Not a session file
+    const auto bad = std::filesystem::temp_directory_path() / "framescope_bad.fscope";
+    { std::ofstream(bad) << "hello\n"; }
+    CHECK(!isSessionFile(bad));
+    bool threw = false;
+    try { loadSession(bad); } catch (const std::exception&) { threw = true; }
+    CHECK(threw);
+    std::filesystem::remove(bad);
+}
+
+void compareShaderCompile()
+{
+    // Run 1: lots of CPU spikes; run 2: almost none.
+    std::vector<double> many;
+    for (double t = 2; t < 58; t += 3)
+        many.push_back(t);
+    auto [f1, s1] = makeRun(60, many);
+    auto [f2, s2] = makeRun(60, {20, 40});
+    const auto c = compareRuns(f1, s1, f2, s2);
+    CHECK(c.verdict.starts_with("Likely shader compilation"));
+    CHECK(c.verdict.find("mostly CPU-bound") != std::string::npos);
+    CHECK(c.spikeRateChange < -0.8);
+}
+
+void compareRepeatable()
+{
+    std::vector<double> times{5, 12, 20, 31, 44, 52};
+    std::vector<double> shifted;
+    for (double t : times)
+        shifted.push_back(t + 1.3); // run 2 started 1.3 s later in the sequence
+    auto [f1, s1] = makeRun(60, times);
+    auto [f2, s2] = makeRun(62, shifted);
+    const auto c = compareRuns(f1, s1, f2, s2);
+    CHECK(c.verdict.starts_with("Stutter repeats at the same moments"));
+    CHECK(c.matchedSpikes == 6);
+    CHECK(near(c.offsetSeconds, -1.3, 0.15));
+}
+
+void compareRandom()
+{
+    auto [f1, s1] = makeRun(60, {5, 12, 20, 31, 44, 52});
+    auto [f2, s2] = makeRun(60, {8.5, 16, 25, 37, 48, 57});
+    const auto c = compareRuns(f1, s1, f2, s2, {.maxOffsetSeconds = 1.0});
+    CHECK(c.verdict.starts_with("Similar amount of stutter, but at random moments"));
+
+    auto [f3, s3] = makeRun(60, {});
+    auto [f4, s4] = makeRun(60, {30});
+    CHECK(compareRuns(f3, s3, f4, s4).verdict.starts_with("Both runs are smooth"));
+}
+
+void htmlReport()
+{
+    auto [frames, spikes] = makeRun(30, {5, 15, 25});
+    spikes[0].attribution = Attribution{Cause::DriverLatency, Side::System, 0.8, "DPC <2 ms> & more", "a.sys"};
+    spikes[1].attribution = Attribution{Cause::DriverLatency, Side::System, 0.7, "DPC", "a.sys"};
+    spikes[2].attribution = Attribution{Cause::GameCpu, Side::Game, 0.6, "CPU busy", ""};
+
+    ReportData d;
+    d.application = "game<1>.exe";
+    d.frames = frames;
+    d.spikes = spikes;
+    d.findings = {{Finding::Level::Problem, "High driver latency", "a.sys reached 2.5 ms"}};
+    auto [f2, s2] = makeRun(30, {5, 15, 25});
+    d.comparison = compareRuns(frames, spikes, f2, s2);
+    const auto html = renderHtmlReport(d);
+
+    CHECK(html.starts_with("<!DOCTYPE html>"));
+    CHECK(html.find("game&lt;1&gt;.exe") != std::string::npos);        // escaped
+    CHECK(html.find("DPC &lt;2 ms&gt; &amp; more") != std::string::npos);
+    CHECK(html.find("<svg class=\"chart\"") != std::string::npos);
+    CHECK(html.find("Mostly your system: 67%") != std::string::npos);
+    CHECK(html.find("High driver latency") != std::string::npos);
+    CHECK(html.find("Run comparison") != std::string::npos);
+    CHECK(html.find("<script") == std::string::npos);                    // static file
+    CHECK(htmlEscape("a\"b'c") == "a&quot;b&#39;c");
+}
+
+void backgroundFinding()
+{
+    EventTimeline tl(kFreq);
+    std::vector<CpuBucket> bs;
+    for (int i = 0; i < 300; ++i) // 3 s, 3.5 cores of background, mostly PID 777
+        bs.push_back(bucket(i * 10.0, 0, 0, 35000, 777, 30000));
+    tl.appendCpuBuckets(bs);
+    CHECK(near(tl.bucketCoverageUs(), 3e6, 1.0));
+
+    CorrelatorConfig cfg;
+    cfg.processName = [](std::uint32_t) { return std::string{"obs64.exe"}; };
+    const auto f = sessionFindings(tl, nullptr, cfg);
+    const auto it = std::ranges::find_if(f, [](const Finding& x) { return x.title == "High background CPU load"; });
+    CHECK(it != f.end());
+    if (it != f.end())
+        CHECK(it->detail.find("obs64.exe") != std::string::npos);
+}
+
 } // namespace
 
 int main()
@@ -670,6 +835,12 @@ int main()
         {"correlateMemory", correlateMemory},
         {"correlateCpuScheduling", correlateCpuScheduling},
         {"findings", findings},
+        {"sessionFileRoundTrip", sessionFileRoundTrip},
+        {"compareShaderCompile", compareShaderCompile},
+        {"compareRepeatable", compareRepeatable},
+        {"compareRandom", compareRandom},
+        {"htmlReport", htmlReport},
+        {"backgroundFinding", backgroundFinding},
     };
 
     for (const auto& [name, fn] : tests) {

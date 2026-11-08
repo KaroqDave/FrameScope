@@ -43,6 +43,12 @@ add_library(framescope_core STATIC
     src/core/Correlator.cpp
     src/core/LatencyStats.h
     src/core/LatencyStats.cpp
+    src/core/SessionFile.h
+    src/core/SessionFile.cpp
+    src/core/Comparison.h
+    src/core/Comparison.cpp
+    src/core/Report.h
+    src/core/Report.cpp
 )
 target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

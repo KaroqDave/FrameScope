@@ -31,6 +31,9 @@ void EventTimeline::clear()
     m_gameUsByCcd.fill(0.0);
     m_gameMigrations = 0;
     m_gameCrossCcd = 0;
+    m_backgroundUs = 0.0;
+    m_bucketCoverageUs = 0.0;
+    m_topBackground.clear();
     // topology is a property of the machine, keep it
 }
 
@@ -107,6 +110,10 @@ void EventTimeline::appendCpuBuckets(std::span<const CpuBucket> buckets)
             m_gameUsByCcd[i] += b.gameUsByCcd[i];
         m_gameMigrations += b.gameMigrations;
         m_gameCrossCcd += b.gameCrossCcdMigrations;
+        m_backgroundUs += b.backgroundUs;
+        m_bucketCoverageUs += toMicroseconds(b.endQpc - b.startQpc);
+        if (b.topBackgroundPid != 0)
+            m_topBackground[b.topBackgroundPid] += b.topBackgroundUs;
         m_buckets.push_back(b);
     }
     std::sort(m_buckets.begin(), m_buckets.end(),

@@ -20,6 +20,9 @@ public:
     std::optional<Spike> append(FrameRecord frame);
     void clear();
 
+    // Replace everything with a saved session (frames + attributed spikes).
+    void restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes);
+
     [[nodiscard]] const std::vector<FrameRecord>& frames() const noexcept { return m_frames; }
     [[nodiscard]] const std::vector<Spike>& spikes() const noexcept { return m_spikes; }
     [[nodiscard]] SessionStats stats() const;

@@ -43,6 +43,13 @@ std::size_t CaptureSession::attributePending(const EventTimeline& timeline, doub
     return done;
 }
 
+void CaptureSession::restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes)
+{
+    m_detector.reset();
+    m_frames = std::move(frames);
+    m_spikes = std::move(spikes);
+}
+
 SessionStats CaptureSession::stats() const
 {
     return computeStats(m_frames, m_spikes.size());

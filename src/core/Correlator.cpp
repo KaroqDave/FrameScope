@@ -417,6 +417,29 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
         }
     }
 
+    // ---- Background CPU load (other processes, averaged over the session)
+    if (tl.bucketCoverageUs() > 1e6) {
+        const double cores = tl.backgroundUsTotal() / tl.bucketCoverageUs();
+        std::uint32_t topPid = 0;
+        double topUs = 0.0;
+        for (const auto& [pid, us] : tl.topBackgroundTotals()) {
+            if (us > topUs) {
+                topUs = us;
+                topPid = pid;
+            }
+        }
+        const auto detail = std::format("Other processes kept ~{:.1f} cores busy on average{}", cores,
+                                        topPid != 0 ? std::format(", mostly {} (~{:.1f} cores)", nameOf(cfg, topPid),
+                                                                  topUs / tl.bucketCoverageUs())
+                                                    : std::string{});
+        if (cores < 1.0)
+            out.push_back({L::Good, "Low background CPU load", detail});
+        else if (cores < 3.0)
+            out.push_back({L::Warning, "Some background CPU load", detail});
+        else
+            out.push_back({L::Problem, "High background CPU load", detail});
+    }
+
     // ---- Samples: GPU, RAM, VRAM, CPU limits
     const auto& samples = tl.samples();
     std::size_t gpuSamples = 0, gpuThrottled = 0;
