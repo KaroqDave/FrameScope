@@ -36,6 +36,8 @@ struct CorrelatorConfig {
     double ccdOffShare = 0.40;       // >= this share of game CPU time off the V-Cache CCD
     int ccdMigrations = 3;           // or this many cross-CCD migrations in the window
 
+    double shaderAfterMs = 250.0;    // cache writes can land shortly after the compile finished
+
     // Turns a PID into a readable name for the evidence text.
     std::function<std::string(std::uint32_t)> processName;
 };
@@ -55,6 +57,9 @@ struct WindowEvidence {
 
     double maxGameDiskUs = 0.0;
     double maxAnyDiskUs = 0.0;
+
+    std::size_t gameShaderWrites = 0; // in [frame start, frame end + shaderAfterMs]
+    std::uint64_t gameShaderBytes = 0;
 
     // From periodic samples around the window
     bool hasSamples = false;
@@ -77,7 +82,7 @@ struct WindowEvidence {
 };
 
 WindowEvidence gatherEvidence(const EventTimeline& timeline, std::int64_t from, std::int64_t to,
-                              std::uint32_t gamePid);
+                              std::uint32_t gamePid, std::int64_t shaderTo = 0);
 
 // Decide the most likely cause of one spike.
 Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventTimeline& timeline,

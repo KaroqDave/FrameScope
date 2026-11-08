@@ -11,6 +11,7 @@ enum class EventKind : std::uint8_t {
     Isr,       // interrupt service routine
     HardFault, // page fault that had to read from disk
     DiskIo,    // completed disk read/write
+    ShaderCacheWrite, // write to a GPU driver / D3D shader cache file (= a shader was just compiled)
 };
 
 std::string_view toString(EventKind k) noexcept;
@@ -23,7 +24,7 @@ struct SystemEvent {
     std::int64_t startQpc = 0;
     std::int64_t endQpc = 0;
     std::uint32_t processId = 0; // HardFault/DiskIo: owning process (0 if unknown)
-    std::uint32_t bytes = 0;     // DiskIo / HardFault transfer size
+    std::uint32_t bytes = 0;     // DiskIo / HardFault / ShaderCacheWrite size
     std::string module;          // Dpc/Isr: driver file name, e.g. "nvlddmkm.sys"
 
     [[nodiscard]] std::int64_t durationQpc() const noexcept { return endQpc - startQpc; }

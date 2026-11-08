@@ -96,6 +96,7 @@ int main(int argc, char** argv)
             switch (e.kind) {
             case core::EventKind::HardFault: ++hardFaults; break;
             case core::EventKind::DiskIo:    ++diskIos; break;
+            case core::EventKind::ShaderCacheWrite: break; // counted in the trace diagnostics
             default:                         ++longEvents; break;
             }
         }

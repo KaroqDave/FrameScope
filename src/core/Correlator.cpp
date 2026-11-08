@@ -34,6 +34,7 @@ std::string_view toString(Cause c) noexcept
     case Cause::GameCpu:         return "Game CPU work";
     case Cause::GameGpu:         return "Game GPU work";
     case Cause::UnexplainedWait: return "Unexplained wait";
+    case Cause::ShaderCompile:   return "Shader compilation";
     }
     return "?";
 }
@@ -123,12 +124,22 @@ bool ramLow(const WindowEvidence& ev, const CorrelatorConfig& cfg)
 } // namespace
 
 WindowEvidence gatherEvidence(const EventTimeline& tl, std::int64_t from, std::int64_t to,
-                              std::uint32_t gamePid)
+                              std::uint32_t gamePid, std::int64_t shaderTo)
 {
     WindowEvidence ev;
     ev.windowUs = tl.toMicroseconds(to - from);
+    shaderTo = std::max(shaderTo, to);
 
-    for (const SystemEvent* e : tl.overlapping(from, to)) {
+    for (const SystemEvent* e : tl.overlapping(from, shaderTo)) {
+        if (e->kind == EventKind::ShaderCacheWrite) {
+            if (gamePid != 0 && e->processId == gamePid) {
+                ++ev.gameShaderWrites;
+                ev.gameShaderBytes += e->bytes;
+            }
+            continue;
+        }
+        if (e->startQpc > to)
+            continue; // only shader writes use the extended window
         const double fullUs = tl.toMicroseconds(e->durationQpc());
         const double inWindowUs = clippedUs(tl, *e, from, to);
 
@@ -154,6 +165,8 @@ WindowEvidence gatherEvidence(const EventTimeline& tl, std::int64_t from, std::i
             if (gamePid != 0 && e->processId == gamePid)
                 ev.maxGameDiskUs = std::max(ev.maxGameDiskUs, fullUs);
             break;
+        case EventKind::ShaderCacheWrite:
+            break; // handled above
         }
     }
 
@@ -215,7 +228,7 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
 
     const auto from = *frame.qpcStart - tl.fromMilliseconds(cfg.preWindowMs);
     const auto to = *frame.qpcEnd;
-    const auto ev = gatherEvidence(tl, from, to, frame.processId);
+    const auto ev = gatherEvidence(tl, from, to, frame.processId, to + tl.fromMilliseconds(cfg.shaderAfterMs));
     const double excessUs = spike.excessMs() * 1000.0;
     const bool cpuOrGpuBound = spike.bound == Bound::Cpu || spike.bound == Bound::Gpu;
     const bool cpuSide = spike.bound == Bound::Cpu || spike.bound == Bound::Stall;
@@ -234,7 +247,16 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
                     module);
     }
 
-    // 2. GPU clocks dropped hard (thermal, power brake, HW slowdown).
+    // 2. The game compiled shaders: its threads wrote to a shader cache
+    //    during (or right after) the frame. Classic first-run stutter.
+    if (ev.gameShaderWrites > 0 && spike.bound != Bound::Gpu) {
+        return make(Cause::ShaderCompile, Side::Game, spike.bound == Bound::Cpu ? 0.8 : 0.65,
+                    std::format("Game wrote {} shader cache entr{} ({:.0f} KB); should be gone on the next run of this scene",
+                                ev.gameShaderWrites, ev.gameShaderWrites == 1 ? "y" : "ies",
+                                static_cast<double>(ev.gameShaderBytes) / 1024.0));
+    }
+
+    // 3. GPU clocks dropped hard (thermal, power brake, HW slowdown).
     if (ev.gpuReasons & gpu_reason::Harmful) {
         // Inferred clock drops (AMD) are weaker evidence than driver-reported reasons.
         const bool reported = (ev.gpuReasons & gpu_reason::Harmful & ~gpu_reason::ClockDrop) != 0;
@@ -420,6 +442,22 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
                 out.push_back({L::Problem, "Game runs on the wrong CCD",
                                detail + ". Check the AMD 3D V-Cache driver, Game Mode and that Game Bar sees the game"});
         }
+    }
+
+    // ---- Shader compilation during play
+    std::size_t shaderWrites = 0;
+    std::uint64_t shaderBytes = 0;
+    for (const auto& e : tl.events()) {
+        if (e.kind == EventKind::ShaderCacheWrite) {
+            ++shaderWrites;
+            shaderBytes += e.bytes;
+        }
+    }
+    if (shaderWrites > 0) {
+        out.push_back({L::Info, "Shaders compiled during play",
+                       std::format("{} shader cache writes ({:.1f} MB). Spikes from this fade once the cache is warm; "
+                                   "compare with a second run of the same scene",
+                                   shaderWrites, static_cast<double>(shaderBytes) / (1024.0 * 1024.0))});
     }
 
     // ---- Background CPU load (other processes, averaged over the session)

@@ -128,6 +128,14 @@ RunComparison compareRuns(std::span<const FrameRecord> firstFrames, std::span<co
                                 c.spikeRateChange * 100.0, c.repeatShare * 100.0);
     }
 
+    const auto shaderIn = [](const RunSummary& r) {
+        const auto it = r.causes.find(Cause::ShaderCompile);
+        return it == r.causes.end() ? std::size_t{0} : it->second;
+    };
+    if (shaderIn(c.first) + shaderIn(c.second) > 0) {
+        c.notes.push_back(std::format("Spikes with shader cache writes: run 1 {}, run 2 {}.", shaderIn(c.first),
+                                      shaderIn(c.second)));
+    }
     if (minutes < 1.0)
         c.notes.push_back("Runs shorter than a minute give weak results.");
     c.notes.push_back("Only meaningful if both runs played the same sequence from the same starting point.");

@@ -46,6 +46,8 @@ std::string describe(const TraceDiagnostics& d)
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <cwctype>
+#include <string>
 
 namespace framescope::etw {
 namespace {
@@ -57,6 +59,7 @@ constexpr GUID kPageFaultGuid = {0x3d6fa8d3, 0xfe05, 0x11d0, {0x9d, 0xda, 0x00, 
 constexpr GUID kDiskIoGuid    = {0x3d6fa8d4, 0xfe05, 0x11d0, {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
 constexpr GUID kThreadGuid    = {0x3d6fa8d1, 0xfe05, 0x11d0, {0x9d, 0xda, 0x00, 0xc0, 0x4f, 0xd7, 0xba, 0x7c}};
 constexpr GUID kImageGuid     = {0x2cb15d1d, 0x5fc1, 0x11d2, {0xab, 0xe1, 0x00, 0xa0, 0xc9, 0x11, 0xf5, 0x18}};
+constexpr GUID kFileIoGuid    = {0x90cbdc39, 0x4a3e, 0x11d1, {0x84, 0xf4, 0x00, 0x00, 0xf8, 0x04, 0x64, 0xe3}};
 
 // Session GUIDs: our own for the private system logger,
 // SystemTraceControlGuid for the classic NT Kernel Logger.
@@ -73,6 +76,32 @@ constexpr UCHAR kOpDiskRead = 10, kOpDiskWrite = 11;
 constexpr UCHAR kOpStart = 1, kOpEnd = 2, kOpDcStart = 3, kOpDcEnd = 4;
 constexpr UCHAR kOpImageLoad = 10, kOpImageUnload = 2;
 constexpr UCHAR kOpCSwitch = 36;
+constexpr UCHAR kOpFileCreate = 64, kOpFileCleanup = 65, kOpFileClose = 66, kOpFileWrite = 68;
+
+// Lower-case path fragments of known shader caches.
+constexpr const wchar_t* kShaderCacheDirs[] = {
+    L"\\dxcache\\",       // NVIDIA (...\NVIDIA\DXCache, ...\NVIDIA\PerDriverVersion\DXCache) and AMD DX11
+    L"\\dxccache\\",      // AMD DX12
+    L"\\glcache\\",
+    L"\\vkcache\\",
+    L"\\nv_cache\\",      // older NVIDIA drivers
+    L"\\d3dscache\\",     // Windows D3D shader cache
+    L"\\shadercache\\",   // Steam and many engines
+    L"\\pipelinecache",   // engine PSO caches
+    L"\\psocache",
+};
+
+bool isShaderCachePath(const wchar_t* path, std::size_t maxChars)
+{
+    std::wstring lower(path, wcsnlen(path, maxChars));
+    for (auto& c : lower)
+        c = static_cast<wchar_t>(towlower(c));
+    for (const auto* dir : kShaderCacheDirs) {
+        if (lower.find(dir) != std::wstring::npos)
+            return true;
+    }
+    return false;
+}
 
 constexpr std::int64_t kBucketsPerSecond = 100;   // 10 ms buckets
 constexpr std::int64_t kBucketFinalizeLag = 200;  // keep buckets open ~2 s for late CPUs
@@ -193,6 +222,68 @@ struct KernelTrace::Impl {
     std::map<std::uint64_t, Module> modules; // kernel images by base address
     std::uint64_t lastRoutine = 0;
     std::string lastRoutineModule;
+
+    // ---- Shader cache files currently open (callback thread only)
+    std::unordered_map<std::uint64_t, std::uint32_t> shaderCacheFiles; // FileObject -> PID
+
+    // FileIo payloads start with pointer-sized fields; whether TTID is 4 or 8
+    // bytes isn't consistent across documentation, so both layouts are tried.
+    void onFileIo(const EVENT_RECORD& r, UCHAR op, const BYTE* data, std::size_t len, std::size_t ptr, std::int64_t ts)
+    {
+        const auto& h = r.EventHeader;
+        const auto headerPid = h.ProcessId != 0xFFFFFFFF ? static_cast<std::uint32_t>(h.ProcessId) : 0u;
+
+        if (op == kOpFileCreate) {
+            // IrpPtr (ptr), TTID (ptr|4), FileObject (ptr), CreateOptions (4),
+            // FileAttributes (4), ShareAccess (4), OpenPath (wchar_t[])
+            bump(counters.fileCreates);
+            for (const std::size_t ttid : {ptr, std::size_t{4}}) {
+                const std::size_t foOff = ptr + ttid;
+                const std::size_t pathOff = foOff + ptr + 12;
+                if (len < pathOff + 2)
+                    continue;
+                const auto* path = reinterpret_cast<const wchar_t*>(data + pathOff);
+                if (path[0] != L'\\')
+                    continue; // wrong layout guess: NT paths start with a backslash
+                if (isShaderCachePath(path, (len - pathOff) / sizeof(wchar_t))) {
+                    std::uint32_t pid = headerPid;
+                    if (pid == 0)
+                        pid = processOf(static_cast<std::uint32_t>(readPtr(data, ptr, ttid)));
+                    shaderCacheFiles[readPtr(data, foOff, ptr)] = pid;
+                }
+                return;
+            }
+            return bump(counters.malformed);
+        }
+
+        if (shaderCacheFiles.empty())
+            return;
+
+        if (op == kOpFileWrite) {
+            // Offset (8), IrpPtr (ptr), TTID (ptr|4), FileObject (ptr), FileKey (ptr), IoSize (4), IoFlags (4)
+            for (const std::size_t ttid : {ptr, std::size_t{4}}) {
+                const std::size_t foOff = 8 + ptr + ttid;
+                if (len < foOff + 2 * ptr + 4)
+                    continue;
+                const auto it = shaderCacheFiles.find(readPtr(data, foOff, ptr));
+                if (it == shaderCacheFiles.end())
+                    continue;
+                const auto size = read<std::uint32_t>(data, foOff + 2 * ptr);
+                bump(counters.shaderWrites);
+                push({core::EventKind::ShaderCacheWrite, ts, ts, it->second != 0 ? it->second : headerPid, size, {}});
+                return;
+            }
+            return;
+        }
+
+        if (op == kOpFileCleanup || op == kOpFileClose) {
+            // IrpPtr (ptr), TTID (ptr|4), FileObject (ptr), FileKey (ptr)
+            for (const std::size_t ttid : {ptr, std::size_t{4}}) {
+                if (len >= ptr + ttid + ptr)
+                    shaderCacheFiles.erase(readPtr(data, ptr + ttid, ptr));
+            }
+        }
+    }
 
     // ---- CPU scheduling (callback thread only, except finishedBuckets)
     struct CpuState {
@@ -413,6 +504,11 @@ struct KernelTrace::Impl {
             return;
         }
 
+        if (IsEqualGUID(g, kFileIoGuid)) {
+            onFileIo(r, op, data, len, ptr, ts);
+            return;
+        }
+
         if (IsEqualGUID(g, kThreadGuid)) {
             if (op == kOpCSwitch) {
                 // NewThreadId (4), OldThreadId (4), priorities/states ...
@@ -526,6 +622,8 @@ bool KernelTrace::start(const KernelTraceOptions& options)
         m->enableFlags |= EVENT_TRACE_FLAG_DISK_IO;
     if (options.cpuScheduling)
         m->enableFlags |= EVENT_TRACE_FLAG_CSWITCH;
+    if (options.shaderCache)
+        m->enableFlags |= EVENT_TRACE_FLAG_FILE_IO_INIT;
 
     {
         std::lock_guard lock(m->mutex);
@@ -539,6 +637,7 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     m->openBuckets.clear();
     m->lastCpuOfThread.clear();
     m->maxBucketSeen = 0;
+    m->shaderCacheFiles.clear();
     m->threadToProcess.clear();
     m->modules.clear();
     m->lastRoutine = 0;

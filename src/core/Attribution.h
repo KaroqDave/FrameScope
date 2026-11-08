@@ -27,6 +27,7 @@ enum class Cause {
     GameCpu,         // CPU-heavy frame without system interference
     GameGpu,         // GPU-heavy frame without system interference
     UnexplainedWait, // nobody busy, no system event found (sync? M3 signals)
+    ShaderCompile,   // the game wrote to a shader cache during the frame (appended: saved files store the number)
 };
 
 std::string_view toString(Side s) noexcept;

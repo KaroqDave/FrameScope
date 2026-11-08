@@ -27,6 +27,11 @@ struct KernelTraceOptions {
     // migrations, background load). Highest-volume event; can be turned off.
     bool cpuScheduling = true;
     std::vector<std::uint8_t> ccdOfCpu; // from CpuTopology; empty = single CCD
+
+    // File I/O init events -> writes to GPU driver / D3D shader caches
+    // (NVIDIA DXCache, AMD DxCache, D3DSCache ...): direct evidence of shader
+    // compilation. Moderate volume (every file open/read/write on the system).
+    bool shaderCache = true;
 };
 
 // Real-time ETW kernel trace: DPC/ISR (resolved to driver names), hard page

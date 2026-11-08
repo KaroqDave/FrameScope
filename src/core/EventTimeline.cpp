@@ -11,6 +11,7 @@ std::string_view toString(EventKind k) noexcept
     case EventKind::Isr:       return "ISR";
     case EventKind::HardFault: return "Hard fault";
     case EventKind::DiskIo:    return "Disk I/O";
+    case EventKind::ShaderCacheWrite: return "Shader cache write";
     }
     return "?";
 }

@@ -81,6 +81,13 @@ New causes per spike, checked in this order after driver latency:
 | Background load | System | Other processes used ≥ 4 cores on average during the frame, mostly one process |
 | CCD scheduling | System | ≥ 40% of the game's CPU time off the V-Cache CCD, or ≥ 3 cross-CCD migrations in the frame |
 
+**Shader compilation** is detected directly: the trace watches file writes to GPU driver and
+D3D shader caches (`DXCache`, `DxcCache`, `D3DSCache`, `shadercache`, engine PSO caches …).
+A CPU-side spike where the game writes a cache entry during the frame (or up to 250 ms after)
+gets **Shader compilation** (game side) with high confidence. It's checked right after driver
+latency. Games that keep their own shader cache somewhere else aren't seen; for those the
+run comparison still works.
+
 The **Findings** tab checks the whole session: worst driver latency, how much of the game's CPU
 time ran on the V-Cache CCD, GPU throttling, minimum free RAM, peak VRAM, CPU limits.
 

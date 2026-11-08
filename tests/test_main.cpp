@@ -898,6 +898,48 @@ void describeHelpers()
     CHECK(describe(CpuTopology{}) == "unknown");
 }
 
+void correlateShaderCompile()
+{
+    // Cache write 100 ms after the frame ended: still inside the extended window.
+    Fixture f(Bound::Cpu);
+    auto w = ev(EventKind::ShaderCacheWrite, 1140, 0, 42);
+    w.bytes = 48 * 1024;
+    f.add(w);
+    auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause == Cause::ShaderCompile && a.side == Side::Game);
+    CHECK(near(a.confidence, 0.8));
+    CHECK(a.detail.starts_with("Game wrote 1 shader cache entry (48 KB)"));
+
+    // Too late (frame ended at 1040 ms, write at 1400 ms) or another process: no.
+    Fixture late(Bound::Cpu);
+    late.add(ev(EventKind::ShaderCacheWrite, 1400, 0, 42));
+    CHECK(attribute(late.spike, late.frame, late.tl).cause == Cause::GameCpu);
+    Fixture other(Bound::Cpu);
+    other.add(ev(EventKind::ShaderCacheWrite, 1010, 0, 7));
+    CHECK(attribute(other.spike, other.frame, other.tl).cause == Cause::GameCpu);
+
+    // Shader writes don't count as disk or DPC evidence.
+    Fixture stall;
+    stall.add(ev(EventKind::ShaderCacheWrite, 1010, 0, 42));
+    CHECK(attribute(stall.spike, stall.frame, stall.tl).cause == Cause::ShaderCompile);
+
+    // Finding
+    const auto fs = sessionFindings(f.tl, nullptr);
+    CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "Shaders compiled during play"; }));
+
+    // Saved sessions keep the new cause
+    auto [frames, spikes] = makeRun(5, {2});
+    spikes[0].attribution = a;
+    SavedSession s;
+    s.frames = frames;
+    s.spikes = spikes;
+    const auto path = std::filesystem::temp_directory_path() / "framescope_shader.fscope";
+    saveSession(path, s);
+    const auto r = loadSession(path);
+    std::filesystem::remove(path);
+    CHECK(r.spikes[0].attribution && r.spikes[0].attribution->cause == Cause::ShaderCompile);
+}
+
 } // namespace
 
 int main()
@@ -938,6 +980,7 @@ int main()
         {"gpuThrottleInference", gpuThrottleInference},
         {"correlateAmdThrottle", correlateAmdThrottle},
         {"describeHelpers", describeHelpers},
+        {"correlateShaderCompile", correlateShaderCompile},
     };
 
     for (const auto& [name, fn] : tests) {
