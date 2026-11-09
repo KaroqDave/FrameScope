@@ -170,10 +170,15 @@ std::string renderChart(std::span<const FrameRecord> frames, std::span<const Spi
 
 std::string renderFindings(const std::vector<Finding>& findings)
 {
-    std::string h = "<table><tr><th>Status</th><th>Check</th><th>Details</th></tr>";
+    const bool linked = std::ranges::any_of(findings, [](const Finding& f) { return f.spikes.has_value(); });
+    std::string h = "<table><tr><th>Status</th><th>Check</th><th>Details</th>";
+    h += linked ? "<th class=\"num\">Spikes</th></tr>" : "</tr>";
     for (const auto& f : findings) {
-        h += std::format(R"(<tr><td><span class="tag {}">{}</span></td><td>{}</td><td>{}</td></tr>)",
+        h += std::format(R"(<tr><td><span class="tag {}">{}</span></td><td>{}</td><td>{}</td>)",
                          levelClass(f.level), toString(f.level), htmlEscape(f.title), htmlEscape(f.detail));
+        if (linked)
+            h += std::format(R"(<td class="num">{}</td>)", f.spikes ? std::format("{}", *f.spikes) : std::string{"—"});
+        h += "</tr>";
     }
     return h + "</table>";
 }

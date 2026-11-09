@@ -111,13 +111,15 @@ int main(int argc, char** argv)
 
         // Findings: saved ones (from .fscope) plus the stutter pattern from the frames.
         auto findings = run.meta.findings;
+        linkFindingsToSpikes(findings, run.session.spikes());
         std::erase_if(findings, [](const Finding& f) { return f.title.starts_with("Stutter "); });
         for (auto& f : stutterPatternFindings(run.session.frames(), run.session.spikes()))
             findings.push_back(std::move(f));
         if (!findings.empty()) {
             out(stdout, "\nFindings:");
             for (const auto& f : findings)
-                out(stdout, "  [{}] {}: {}", toString(f.level), f.title, f.detail);
+                out(stdout, "  [{}] {}: {}{}", toString(f.level), f.title, f.detail,
+                    impactText(f).empty() ? std::string{} : " -> " + impactText(f));
         }
 
         if (!run.meta.shaderWrites.empty()) {

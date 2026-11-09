@@ -1133,6 +1133,49 @@ void compilerSampling()
         CHECK(it->detail.starts_with("The shader compiler used ~2.4 s of the game's CPU time."));
 }
 
+void findingsLinkedToSpikes()
+{
+    // Like David's runs: high driver latency but no spike caused by it, mostly game spikes.
+    std::vector<Finding> f{
+        {Finding::Level::Problem, "High driver latency", "ntoskrnl.exe reached 2.85 ms"},
+        {Finding::Level::Warning, "Some background CPU load", "~1.5 cores"},
+        {Finding::Level::Good, "Enough free RAM", "45 GB free"},
+        {Finding::Level::Info, "Stutter comes in bursts", "..."},
+    };
+    std::vector<Spike> spikes(20);
+    for (std::size_t i = 0; i < spikes.size(); ++i) {
+        const Cause c = i < 10 ? Cause::GameCpu : i < 14 ? Cause::GameGpu : i < 18 ? Cause::BackgroundLoad : Cause::StorageWait;
+        spikes[i].attribution = Attribution{c, Side::Game, 0.6, "", ""};
+    }
+    linkFindingsToSpikes(f, spikes);
+
+    const auto find = [&](std::string_view title) {
+        return std::ranges::find_if(f, [&](const Finding& x) { return x.title == title; });
+    };
+    const auto drv = find("High driver latency");
+    CHECK(drv != f.end() && drv->level == Finding::Level::Warning); // caused nothing -> downgraded
+    CHECK(impactText(*drv) == "linked to 0 of 20 spikes");
+    const auto bg = find("Some background CPU load");
+    CHECK(bg != f.end() && bg->level == Finding::Level::Problem);   // 4 of 20 = 20% -> upgraded
+    CHECK(impactText(*bg) == "linked to 4 of 20 spikes (20%)");
+    CHECK(find("Enough free RAM")->level == Finding::Level::Good);
+    CHECK(impactText(*find("Stutter comes in bursts")).empty());    // not tied to a cause
+    CHECK(find("Spikes waiting on storage") == f.end());             // only 2: below 3
+    const auto game = find("The game's own work");
+    CHECK(game != f.end() && game->spikes == 14u);
+    CHECK(game->detail.starts_with("CPU-heavy frames 10, GPU-heavy frames 4"));
+    CHECK(f.front().level == Finding::Level::Problem);               // re-sorted
+
+    // Idempotent on saved sessions: linking twice doesn't duplicate added findings.
+    linkFindingsToSpikes(f, spikes);
+    CHECK(std::ranges::count_if(f, [](const Finding& x) { return x.title == "The game's own work"; }) == 1);
+
+    // Without attributed spikes nothing changes.
+    std::vector<Finding> g{{Finding::Level::Problem, "High driver latency", "x"}};
+    linkFindingsToSpikes(g, std::vector<Spike>(5));
+    CHECK(g[0].level == Finding::Level::Problem && !g[0].spikes);
+}
+
 } // namespace
 
 int main()
@@ -1180,6 +1223,7 @@ int main()
         {"rareGpuDropsAndDiskFlushes", rareGpuDropsAndDiskFlushes},
         {"backgroundExcludesGame", backgroundExcludesGame},
         {"compilerSampling", compilerSampling},
+        {"findingsLinkedToSpikes", findingsLinkedToSpikes},
     };
 
     for (const auto& [name, fn] : tests) {

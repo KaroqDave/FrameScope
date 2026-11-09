@@ -88,6 +88,11 @@ gets **Shader compilation** (game side) with high confidence. It's checked right
 latency. Games that keep their own shader cache somewhere else aren't seen; for those the
 run comparison still works.
 
+Each check is **linked to the spikes it explains** ("linked to 12 of 107 spikes"), and rated
+by that: a problem behind no spike at all is shown as a warning, a warning behind at least 10% of
+the spikes (and at least 3) becomes a problem. Causes with several spikes but no check of their
+own (storage waits, the game loading data, the game's own work) get one.
+
 The **Findings** tab checks the whole session: worst driver latency, how much of the game's CPU
 time ran on the V-Cache CCD, GPU throttling, minimum free RAM, peak VRAM, CPU limits.
 

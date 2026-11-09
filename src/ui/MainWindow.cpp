@@ -811,8 +811,12 @@ void MainWindow::saveDiagnostics()
     o << "Verdict      " << qs(m_session.diagnosis().verdict) << "\n";
 
     section(tr("Findings"));
-    for (const auto& f : currentFindings())
-        o << "[" << QString::fromUtf8(core::toString(f.level).data()) << "] " << qs(f.title) << ": " << qs(f.detail) << "\n";
+    for (const auto& f : currentFindings()) {
+        o << "[" << QString::fromUtf8(core::toString(f.level).data()) << "] " << qs(f.title) << ": " << qs(f.detail);
+        if (const auto impact = core::impactText(f); !impact.empty())
+            o << " (" << qs(impact) << ")";
+        o << "\n";
+    }
     for (const auto& f : m_baselineFindings)
         o << "[baseline " << QString::fromUtf8(core::toString(f.level).data()) << "] " << qs(f.title) << ": " << qs(f.detail) << "\n";
 
@@ -843,6 +847,7 @@ std::vector<core::Finding> MainWindow::currentFindings() const
     auto findings = m_loadedFindings ? *m_loadedFindings
                                      : core::sessionFindings(m_timeline, m_latency.empty() ? nullptr : &m_latency,
                                                              m_correlatorConfig);
+    core::linkFindingsToSpikes(findings, m_session.spikes());
     // The stutter pattern is recomputed from the frames (also for older saved sessions).
     std::erase_if(findings, [](const core::Finding& f) { return f.title.starts_with("Stutter "); });
     const auto pattern = core::stutterPatternFindings(m_session.frames(), m_session.spikes());
@@ -866,7 +871,10 @@ void MainWindow::updateFindings()
         m_findings->addItem(item);
     };
     const auto add = [this](const core::Finding& f) {
-        auto* item = new QListWidgetItem(QStringLiteral("● %1\n    %2").arg(qs(f.title), qs(f.detail)));
+        auto text = QStringLiteral("● %1\n    %2").arg(qs(f.title), qs(f.detail));
+        if (const auto impact = core::impactText(f); !impact.empty())
+            text += QStringLiteral("\n    → %1").arg(qs(impact));
+        auto* item = new QListWidgetItem(text);
         item->setForeground(findingColor(f.level));
         item->setToolTip(QString::fromUtf8(core::toString(f.level).data()));
         m_findings->addItem(item);

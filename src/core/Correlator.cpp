@@ -4,6 +4,7 @@
 #include <cmath>
 #include <format>
 #include <map>
+#include <set>
 #include <numeric>
 
 namespace framescope::core {
@@ -693,6 +694,123 @@ std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames,
                                    static_cast<double>(spikes.size()) * 60.0 / duration)});
     }
     return out;
+}
+
+namespace {
+
+std::optional<Cause> causeOfFinding(std::string_view title)
+{
+    struct Entry {
+        std::string_view title;
+        Cause cause;
+    };
+    static constexpr Entry table[] = {
+        {"Driver latency is low", Cause::DriverLatency},
+        {"Some driver latency", Cause::DriverLatency},
+        {"High driver latency", Cause::DriverLatency},
+        {"Game stays on the V-Cache CCD", Cause::CcdScheduling},
+        {"Game partly runs on the non-V-Cache CCD", Cause::CcdScheduling},
+        {"Game runs on the wrong CCD", Cause::CcdScheduling},
+        {"Shaders compiled during play", Cause::ShaderCompile},
+        {"Low background CPU load", Cause::BackgroundLoad},
+        {"Some background CPU load", Cause::BackgroundLoad},
+        {"High background CPU load", Cause::BackgroundLoad},
+        {"No GPU throttling", Cause::GpuThrottle},
+        {"Rare GPU clock drops", Cause::GpuThrottle},
+        {"GPU throttling", Cause::GpuThrottle},
+        {"Enough free RAM", Cause::LowMemory},
+        {"RAM nearly full", Cause::LowMemory},
+        {"Enough VRAM", Cause::VramFull},
+        {"VRAM nearly full", Cause::VramFull},
+        {"VRAM full", Cause::VramFull},
+        {"CPU clocks were limited", Cause::CpuThrottle},
+        // Added by linkFindingsToSpikes itself
+        {"Spikes waiting on storage", Cause::StorageWait},
+        {"Game loading data from disk", Cause::Paging},
+    };
+    for (const auto& e : table) {
+        if (e.title == title)
+            return e.cause;
+    }
+    return std::nullopt;
+}
+
+constexpr std::string_view kGameWorkTitle = "The game's own work";
+
+} // namespace
+
+void linkFindingsToSpikes(std::vector<Finding>& findings, std::span<const Spike> spikes)
+{
+    using L = Finding::Level;
+    std::map<Cause, std::size_t> counts;
+    std::size_t total = 0;
+    for (const auto& s : spikes) {
+        if (s.attribution && s.attribution->cause != Cause::NoTraceData) {
+            ++counts[s.attribution->cause];
+            ++total;
+        }
+    }
+    if (total == 0)
+        return;
+
+    // Findings this function adds are rebuilt every time (saved sessions contain them).
+    std::erase_if(findings, [](const Finding& f) {
+        return f.title == kGameWorkTitle || f.title == "Spikes waiting on storage" || f.title == "Game loading data from disk";
+    });
+
+    const auto count = [&](Cause c) {
+        const auto it = counts.find(c);
+        return it == counts.end() ? std::size_t{0} : it->second;
+    };
+    const std::size_t significant = std::max<std::size_t>(3, (total + 9) / 10); // >= 3 and >= 10%
+
+    std::set<Cause> covered;
+    for (auto& f : findings) {
+        const auto cause = causeOfFinding(f.title);
+        if (!cause)
+            continue;
+        covered.insert(*cause);
+        const auto n = count(*cause);
+        f.spikes = n;
+        f.spikesTotal = total;
+        if (f.level == L::Problem && n == 0)
+            f.level = L::Warning;
+        else if (f.level == L::Warning && n >= significant)
+            f.level = L::Problem;
+    }
+
+    // Causes behind several spikes that no check covers yet.
+    const auto add = [&](Cause c, L level, std::string title, std::string detail) {
+        const auto n = count(c);
+        if (n < 3 || covered.contains(c))
+            return;
+        findings.push_back({level, std::move(title), std::move(detail), n, total});
+    };
+    add(Cause::StorageWait, count(Cause::StorageWait) >= significant ? L::Warning : L::Info, "Spikes waiting on storage",
+        "Frames waited on slow disk I/O; usually the game streaming data, sometimes a busy or slow drive");
+    add(Cause::Paging, L::Info, "Game loading data from disk",
+        "The game's threads waited on hard page faults with enough free RAM: it was reading data in");
+
+    const auto cpu = count(Cause::GameCpu), gpu = count(Cause::GameGpu), shader = count(Cause::ShaderCompile);
+    if (cpu + gpu + shader > 0) {
+        findings.push_back({L::Info, std::string{kGameWorkTitle},
+                            std::format("CPU-heavy frames {}, GPU-heavy frames {}, shader compilation {}; nothing on the "
+                                        "system side explained these",
+                                        cpu, gpu, shader),
+                            cpu + gpu + shader, total});
+    }
+
+    std::stable_sort(findings.begin(), findings.end(), [](const Finding& a, const Finding& b) { return a.level > b.level; });
+}
+
+std::string impactText(const Finding& f)
+{
+    if (!f.spikes || !f.spikesTotal)
+        return {};
+    if (*f.spikes == 0)
+        return std::format("linked to 0 of {} spikes", *f.spikesTotal);
+    return std::format("linked to {} of {} spikes ({:.0f}%)", *f.spikes, *f.spikesTotal,
+                       100.0 * static_cast<double>(*f.spikes) / static_cast<double>(*f.spikesTotal));
 }
 
 } // namespace framescope::core

@@ -7,6 +7,7 @@
 #include "core/SpikeDetector.h"
 
 #include <array>
+#include <optional>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -128,12 +129,30 @@ struct Finding {
     Level level = Level::Info;
     std::string title;
     std::string detail;
+    std::optional<std::size_t> spikes;      // spikes this finding explains (set by linkFindingsToSpikes)
+    std::optional<std::size_t> spikesTotal; // ... out of this many attributed spikes
+
+    Finding() = default;
+    Finding(Level l, std::string t, std::string d, std::optional<std::size_t> n = {}, std::optional<std::size_t> total = {})
+        : level(l), title(std::move(t)), detail(std::move(d)), spikes(n), spikesTotal(total)
+    {
+    }
 };
 
 std::string_view toString(Finding::Level l) noexcept;
 
 std::vector<Finding> sessionFindings(const EventTimeline& timeline, const LatencyStats* latency,
                                      const CorrelatorConfig& cfg = {});
+
+// Ties session findings to the spikes they explain: counts the spikes per
+// finding and rates by impact. A problem that caused no spike becomes a
+// warning; a warning behind >= 10% of the spikes becomes a problem. Causes
+// without a finding of their own get one. Works on saved sessions too (the
+// link goes by finding title). Needs attributed spikes; otherwise no change.
+void linkFindingsToSpikes(std::vector<Finding>& findings, std::span<const Spike> spikes);
+
+// "linked to 12 of 107 spikes (11%)" / "linked to 0 of 107 spikes" / "" (not linked)
+std::string impactText(const Finding& finding);
 
 // When does the stutter happen? Bursts (loading, streaming, shader compiles
 // when entering new areas) vs. evenly spread (something constant). Works
