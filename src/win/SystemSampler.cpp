@@ -430,6 +430,12 @@ bool isElevated()
     return ok && elevation.TokenIsElevated != 0;
 }
 
+void deleteLegacyRegistrySettings()
+{
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\FrameScope");
+    RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\FrameScope");
+}
+
 } // namespace framescope::win
 
 #else // ---------------------------------------------------------------------
@@ -449,6 +455,7 @@ std::string SystemSampler::status() const { return "System sampling is only avai
 core::CpuTopology queryCpuTopology() { return {}; }
 std::string processName(std::uint32_t) { return {}; }
 bool isElevated() { return false; }
+void deleteLegacyRegistrySettings() {}
 
 } // namespace framescope::win
 

@@ -138,6 +138,8 @@ if(FRAMESCOPE_BUILD_GUI)
         src/ui/MainWindow.cpp
         src/ui/FrameTimeView.h
         src/ui/FrameTimeView.cpp
+        src/ui/Settings.h
+        src/ui/Settings.cpp
     )
 
     # PresentMon (and the ETW kernel session in M2) needs admin rights,

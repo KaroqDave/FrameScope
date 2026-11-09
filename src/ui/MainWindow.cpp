@@ -4,6 +4,7 @@
 #include "core/Report.h"
 #include "core/SessionFile.h"
 #include "ui/FrameTimeView.h"
+#include "ui/Settings.h"
 
 #include <QAction>
 #include <QCoreApplication>
@@ -96,12 +97,12 @@ QColor sideColor(core::Side side)
 
 QString lastDir()
 {
-    return QSettings().value(kKeyLastDir).toString();
+    return QSettings(settingsFile(), QSettings::IniFormat).value(kKeyLastDir).toString();
 }
 
 void rememberDir(const QString& file)
 {
-    QSettings().setValue(kKeyLastDir, QFileInfo(file).absolutePath());
+    QSettings(settingsFile(), QSettings::IniFormat).setValue(kKeyLastDir, QFileInfo(file).absolutePath());
 }
 
 } // namespace
@@ -114,7 +115,7 @@ MainWindow::MainWindow(QWidget* parent)
     buildUi();
     buildMenus();
 
-    QSettings settings;
+    QSettings settings(settingsFile(), QSettings::IniFormat);
     m_presentMonPath->setText(settings.value(kKeyPresentMon).toString());
     m_processName->setText(settings.value(kKeyProcess).toString());
     m_traceCheck->setChecked(etw::KernelTrace::isSupported() && settings.value(kKeyTrace, true).toBool());
@@ -164,7 +165,7 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    QSettings settings;
+    QSettings settings(settingsFile(), QSettings::IniFormat);
     settings.setValue(kKeyPresentMon, m_presentMonPath->text());
     settings.setValue(kKeyProcess, m_processName->text());
     settings.setValue(kKeyTrace, m_traceCheck->isChecked());
@@ -762,6 +763,7 @@ void MainWindow::saveDiagnostics()
     o << "Admin rights " << (win::isElevated() ? "yes" : "no") << "\n";
     o << "CPU          " << qs(core::describe(win::queryCpuTopology())) << "\n";
     o << "QPC freq     " << etw::KernelTrace::qpcFrequency() << " Hz\n";
+    o << "Settings     " << settingsFile() << "\n";
     o << "Mode         " << (m_mode == Mode::Capture ? "capturing" : m_mode == Mode::Baseline ? "baseline" : "idle") << "\n";
 
     section(tr("Sensors"));

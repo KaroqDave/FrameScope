@@ -51,4 +51,7 @@ std::string processName(std::uint32_t pid);
 // True if this process runs with admin rights (needed for ETW and PresentMon).
 bool isElevated();
 
+// Removes HKCU\Software\FrameScope, where beta.1-beta.5 kept their settings.
+void deleteLegacyRegistrySettings();
+
 } // namespace framescope::win

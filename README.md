@@ -206,6 +206,20 @@ framescope-cli session.fscope --report report.html
 framescope-cli run1.fscope --compare run2.fscope
 ```
 
+## Files it writes
+
+FrameScope is portable. Its only file of its own is **`framescope.ini` next to the exe**
+(PresentMon path, game name, System trace on/off, last folder). If that folder isn't writable,
+e.g. under Program Files, the ini goes to the user's config folder instead
+(`%LOCALAPPDATA%\FrameScope\FrameScope\framescope.ini`).
+
+Everything else is only written when you save it (sessions, reports, diagnostics). Traces are
+streamed into memory; no `.etl` or CSV files are created. While capturing, Windows runs the
+trace sessions `FrameScope-Kernel` and `FrameScope`; they end when the capture stops.
+
+Betas 1–5 stored their settings in the registry (`HKCU\Software\FrameScope`); the first start
+of a newer version moves them into the ini and deletes that key.
+
 ## Reporting problems
 
 **Tools → Save diagnostics…** writes one text file with everything needed to debug a capture:
