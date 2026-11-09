@@ -217,6 +217,7 @@ WindowEvidence gatherEvidence(const EventTimeline& tl, std::int64_t from, std::i
             ev.gameUsByCcd[i] += f * b->gameUsByCcd[i];
         ev.gameCrossCcdMigrations += b->gameCrossCcdMigrations;
         ev.backgroundUs += f * b->backgroundUs;
+        ev.shaderCompileUs += f * b->shaderCompileUs;
         if (b->topBackgroundPid != 0 && b->topBackgroundPid == gamePid) {
             // Before the trace knew the game's PID, its threads counted as "other".
             ev.backgroundUs -= f * b->topBackgroundUs;
@@ -268,6 +269,15 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
 
     // 2. The game compiled shaders: its threads wrote to a shader cache
     //    during (or right after) the frame. Classic first-run stutter.
+    // Direct measurement: the game's threads were sampled inside a shader
+    // compiler (driver or D3D) during the frame.
+    if (spike.bound != Bound::Gpu && ev.shaderCompileUs >= cfg.compileMinMs * 1000.0 &&
+        ev.shaderCompileUs >= cfg.compileShare * excessUs) {
+        return make(Cause::ShaderCompile, Side::Game, confidenceFor(ev.shaderCompileUs, excessUs) >= 0.6 ? 0.9 : 0.75,
+                    std::format("Shader compiler ran ~{} on the game's threads during this frame; should be gone on "
+                                "the next run of this scene",
+                                ms(ev.shaderCompileUs)));
+    }
     if (ev.gameShaderWrites > 0 && spike.bound != Bound::Gpu) {
         return make(Cause::ShaderCompile, Side::Game, spike.bound == Bound::Cpu ? 0.8 : 0.65,
                     std::format("Game wrote {} shader cache entr{} ({:.0f} KB); should be gone on the next run of this scene",
@@ -505,12 +515,16 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
             apiBytes += e.bytes;
         }
     }
-    if (apiWrites + diskWrites > 0) {
+    const double compileS = tl.shaderCompileUsTotal() / 1e6;
+    if (apiWrites + diskWrites > 0 || compileS >= 0.1) {
         const double mb = static_cast<double>(std::max(apiBytes, diskBytes)) / (1024.0 * 1024.0);
-        out.push_back({L::Info, "Shaders compiled during play",
-                       std::format("{} shader cache writes, {} flushes to disk ({:.1f} MB). Spikes from this fade once "
-                                   "the cache is warm; compare with a second run of the same scene",
-                                   apiWrites, diskWrites, mb)});
+        std::string detail;
+        if (compileS >= 0.1)
+            detail = std::format("The shader compiler used ~{:.1f} s of the game's CPU time. ", compileS);
+        if (apiWrites + diskWrites > 0)
+            detail += std::format("{} shader cache writes, {} flushes to disk ({:.1f} MB). ", apiWrites, diskWrites, mb);
+        detail += "Spikes from this fade once the cache is warm; compare with a second run of the same scene";
+        out.push_back({L::Info, "Shaders compiled during play", detail});
     }
 
     // ---- Background CPU load (other processes, averaged over the session)

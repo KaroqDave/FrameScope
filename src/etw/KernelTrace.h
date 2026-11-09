@@ -32,6 +32,10 @@ struct KernelTraceOptions {
     // (NVIDIA DXCache, AMD DxCache, D3DSCache ...): direct evidence of shader
     // compilation. Moderate volume (every file open/read/write on the system).
     bool shaderCache = true;
+
+    // CPU sampling (~1 kHz per core): game time spent inside shader compiler
+    // DLLs, i.e. direct per-frame evidence of shader compilation.
+    bool compilerSampling = true;
 };
 
 // Real-time ETW kernel trace: DPC/ISR (resolved to driver names), hard page
@@ -62,6 +66,12 @@ struct TraceDiagnostics {
     std::uint64_t eventsLost = 0;        // ETW: buffers full
     std::uint64_t realtimeBuffersLost = 0;
     std::vector<std::string> shaderCachePaths; // first few cache files seen
+    std::uint64_t profileSamples = 0;          // CPU samples (all processes)
+    std::uint64_t gameSamples = 0;             // ... on the game's threads
+    double sampleIntervalUs = 0.0;
+    // Graphics/compiler DLLs the game's threads were sampled in: name -> samples.
+    // Only the compiler ones count as shader compilation; the rest is for calibration.
+    std::vector<std::pair<std::string, std::uint64_t>> gpuModuleSamples;
 };
 
 std::string describe(const TraceDiagnostics& d);

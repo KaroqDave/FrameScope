@@ -1087,6 +1087,52 @@ void backgroundExcludesGame()
     CHECK(a.cause != Cause::BackgroundLoad);
 }
 
+void compilerSampling()
+{
+    // 3 buckets of 10 ms in the frame window with 8 ms compiler time each (across cores).
+    Fixture f(Bound::Cpu);
+    std::vector<CpuBucket> bs;
+    for (double t = 1000; t < 1030; t += 10) {
+        auto b = bucket(t, 9000, 0, 500, 0, 0);
+        b.shaderCompileUs = 8000;
+        bs.push_back(b);
+    }
+    f.tl.appendCpuBuckets(bs);
+    const auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause == Cause::ShaderCompile && a.side == Side::Game);
+    CHECK(a.confidence >= 0.75);
+    CHECK(a.detail.starts_with("Shader compiler ran ~24.0 ms"));
+
+    // A little compiler time (2 ms) in a 33 ms spike is not enough.
+    Fixture small(Bound::Cpu);
+    auto b = bucket(1010, 9000, 0, 500, 0, 0);
+    b.shaderCompileUs = 2000;
+    small.tl.appendCpuBuckets(std::span{&b, 1});
+    CHECK(attribute(small.spike, small.frame, small.tl).cause == Cause::GameCpu);
+
+    // GPU-bound frames aren't blamed on the compiler.
+    Fixture gpu(Bound::Gpu);
+    gpu.tl.appendCpuBuckets(bs);
+    CHECK(attribute(gpu.spike, gpu.frame, gpu.tl).cause == Cause::GameGpu);
+
+    // Session finding: 24 ms in total is below the 0.1 s threshold ...
+    const auto isShaderFinding = [](const Finding& x) { return x.title == "Shaders compiled during play"; };
+    CHECK(std::ranges::none_of(sessionFindings(f.tl, nullptr), isShaderFinding));
+    // ... 2.4 s is reported.
+    std::vector<CpuBucket> many;
+    for (int i = 0; i < 300; ++i) {
+        auto m = bucket(5000.0 + i * 10.0, 9000, 0, 500, 0, 0);
+        m.shaderCompileUs = 8000;
+        many.push_back(m);
+    }
+    f.tl.appendCpuBuckets(many);
+    const auto fs = sessionFindings(f.tl, nullptr);
+    const auto it = std::ranges::find_if(fs, isShaderFinding);
+    CHECK(it != fs.end());
+    if (it != fs.end())
+        CHECK(it->detail.starts_with("The shader compiler used ~2.4 s of the game's CPU time."));
+}
+
 } // namespace
 
 int main()
@@ -1133,6 +1179,7 @@ int main()
         {"stutterPattern", stutterPattern},
         {"rareGpuDropsAndDiskFlushes", rareGpuDropsAndDiskFlushes},
         {"backgroundExcludesGame", backgroundExcludesGame},
+        {"compilerSampling", compilerSampling},
     };
 
     for (const auto& [name, fn] : tests) {

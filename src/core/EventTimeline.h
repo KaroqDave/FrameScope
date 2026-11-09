@@ -55,6 +55,7 @@ public:
     [[nodiscard]] std::uint64_t gameCrossCcdMigrationsTotal() const noexcept { return m_gameCrossCcd; }
     // Other processes' CPU time over all buckets, and the time the buckets cover.
     [[nodiscard]] double backgroundUsTotal() const noexcept { return m_backgroundUs; }
+    [[nodiscard]] double shaderCompileUsTotal() const noexcept { return m_shaderCompileUs; }
     [[nodiscard]] double bucketCoverageUs() const noexcept { return m_bucketCoverageUs; }
     // Per-process totals of each bucket's top background process.
     [[nodiscard]] const std::map<std::uint32_t, double>& topBackgroundTotals() const noexcept { return m_topBackground; }
@@ -86,6 +87,7 @@ private:
     std::uint64_t m_gameMigrations = 0;
     std::uint64_t m_gameCrossCcd = 0;
     double m_backgroundUs = 0.0;
+    double m_shaderCompileUs = 0.0;
     double m_bucketCoverageUs = 0.0;
     std::map<std::uint32_t, double> m_topBackground;
 };

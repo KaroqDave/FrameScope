@@ -22,6 +22,10 @@ std::string describe(const TraceDiagnostics& d)
     out += std::format("Shader cache writes {} (flushed to disk {})\n", d.shaderCacheWrites, d.shaderCacheDiskWrites);
     for (const auto& p : d.shaderCachePaths)
         out += std::format("  cache file: {}\n", p);
+    out += std::format("CPU samples         {} ({} on the game's threads, every {:.0f} µs)\n", d.profileSamples,
+                       d.gameSamples, d.sampleIntervalUs);
+    for (const auto& [name, n] : d.gpuModuleSamples)
+        out += std::format("  in {}: {} samples (~{:.1f} s)\n", name, n, static_cast<double>(n) * d.sampleIntervalUs / 1e6);
     out += std::format("Malformed events    {}\n", d.malformed);
     out += std::format("Events lost         {} (real-time buffers lost {})\n", d.eventsLost, d.realtimeBuffersLost);
     return out;
@@ -42,6 +46,7 @@ std::string describe(const TraceDiagnostics& d)
 #include <evntrace.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <map>
@@ -50,6 +55,7 @@ std::string describe(const TraceDiagnostics& d)
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <cctype>
 #include <cwctype>
 #include <string>
 
@@ -75,6 +81,59 @@ constexpr wchar_t kNtKernelLoggerName[] = L"NT Kernel Logger";
 
 // Opcodes
 constexpr UCHAR kOpThreadDpc = 66, kOpIsr = 67, kOpDpc = 68, kOpTimerDpc = 69;
+constexpr UCHAR kOpSampledProfile = 46;
+
+// User-mode DLLs whose CPU time on the game's threads is tracked. "compiler"
+// ones count as shader compilation; the others are graphics runtimes/drivers,
+// tracked only to calibrate on real systems (shown in the diagnostics).
+struct GpuModule {
+    const char* name;
+    bool compiler;
+};
+constexpr GpuModule kGpuModules[] = {
+    {"amdxc64.dll", true},       // AMD DX12 shader compiler
+    {"nvgpucomp64.dll", true},   // NVIDIA shader compiler
+    {"igc64.dll", true},         // Intel Graphics Compiler
+    {"dxcompiler.dll", true},    // DXC (HLSL -> DXIL) at runtime
+    {"d3dcompiler_47.dll", true},// FXC at runtime
+    {"dxil.dll", true},
+    {"amdxx64.dll", false},      // AMD DX12 user-mode driver
+    {"atidxx64.dll", false},     // AMD DX11 user-mode driver
+    {"amdvlk64.dll", false},     // AMD Vulkan
+    {"nvwgf2umx.dll", false},    // NVIDIA DX user-mode driver
+    {"nvoglv64.dll", false},     // NVIDIA OpenGL/Vulkan
+    {"igd12umd64.dll", false},   // Intel DX12
+    {"d3d12core.dll", false},
+    {"d3d12.dll", false},
+    {"dxgi.dll", false},
+};
+
+int gpuModuleIndex(const std::string& fileName)
+{
+    std::string lower = fileName;
+    for (auto& c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (int i = 0; i < static_cast<int>(std::size(kGpuModules)); ++i) {
+        if (lower == kGpuModules[i].name)
+            return i;
+    }
+    return -1;
+}
+
+// Sampled profiling needs SeSystemProfilePrivilege enabled in the token.
+void enableProfilePrivilege()
+{
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+        return;
+    TOKEN_PRIVILEGES tp{};
+    tp.PrivilegeCount = 1;
+    if (LookupPrivilegeValueW(nullptr, SE_SYSTEM_PROFILE_NAME, &tp.Privileges[0].Luid)) {
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), nullptr, nullptr);
+    }
+    CloseHandle(token);
+}
 constexpr UCHAR kOpHardFault = 32;
 constexpr UCHAR kOpDiskRead = 10, kOpDiskWrite = 11;
 constexpr UCHAR kOpStart = 1, kOpEnd = 2, kOpDcStart = 3, kOpDcEnd = 4;
@@ -228,6 +287,37 @@ struct KernelTrace::Impl {
     std::map<std::uint64_t, Module> modules; // kernel images by base address
     std::uint64_t lastRoutine = 0;
     std::string lastRoutineModule;
+
+    // ---- CPU sampling of graphics DLLs (callback thread only, except moduleSamples)
+    struct ImageRange {
+        std::uint64_t base = 0;
+        std::uint64_t end = 0;
+        int module = -1; // index into kGpuModules
+    };
+    std::unordered_map<std::uint32_t, std::vector<ImageRange>> gpuImages; // PID -> loaded graphics DLLs
+    double sampleUs = 1000.0;
+    std::array<std::atomic<std::uint64_t>, std::size(kGpuModules)> moduleSamples{};
+    std::atomic<std::uint64_t> profileSamples{0}, gameSamples{0};
+
+    void onProfileSample(std::uint64_t ip, std::uint32_t tid, std::int64_t ts)
+    {
+        profileSamples.fetch_add(1, std::memory_order_relaxed);
+        const auto target = targetPid.load(std::memory_order_relaxed);
+        if (target == 0 || processOf(tid) != target)
+            return;
+        gameSamples.fetch_add(1, std::memory_order_relaxed);
+        const auto it = gpuImages.find(target);
+        if (it == gpuImages.end())
+            return;
+        for (const auto& r : it->second) {
+            if (ip >= r.base && ip < r.end) {
+                moduleSamples[static_cast<std::size_t>(r.module)].fetch_add(1, std::memory_order_relaxed);
+                if (kGpuModules[r.module].compiler)
+                    bucketAt(ts / bucketTicks).bucket.shaderCompileUs += static_cast<float>(sampleUs);
+                return;
+            }
+        }
+    }
 
     // ---- Shader cache files (callback thread only)
     std::unordered_map<std::uint64_t, std::uint32_t> shaderCacheFiles; // FileObject (from creates) -> PID
@@ -494,6 +584,13 @@ struct KernelTrace::Impl {
         const auto& g = h.ProviderId;
 
         if (IsEqualGUID(g, kPerfInfoGuid)) {
+            if (op == kOpSampledProfile) {
+                // InstructionPointer (ptr), ThreadId (4), Count (2), Reserved (2)
+                if (len < ptr + 4)
+                    return bump(counters.malformed);
+                onProfileSample(readPtr(data, 0, ptr), read<std::uint32_t>(data, ptr), ts);
+                return;
+            }
             // DPC / ISR: InitialTime (8), Routine (ptr), ... ; logged at completion.
             core::EventKind kind;
             if (op == kOpDpc || op == kOpThreadDpc || op == kOpTimerDpc)
@@ -601,8 +698,20 @@ struct KernelTrace::Impl {
             bump(counters.image);
             const auto base = readPtr(data, 0, ptr);
             const bool kernelSpace = ptr == 8 ? (base >> 63) != 0 : (base >> 31) != 0;
-            if (!kernelSpace)
-                return; // user-mode DLLs don't run DPCs
+            if (!kernelSpace) {
+                // User-mode: only graphics/compiler DLLs, for CPU sampling.
+                const auto pid = read<std::uint32_t>(data, 2 * ptr);
+                if (op == kOpImageLoad || op == kOpDcStart) {
+                    const auto* name = reinterpret_cast<const wchar_t*>(data + nameOff);
+                    const int idx = gpuModuleIndex(fileNameOf(narrow(name, (len - nameOff) / sizeof(wchar_t))));
+                    if (idx >= 0)
+                        gpuImages[pid].push_back({base, base + readPtr(data, ptr, ptr), idx});
+                } else if (op == kOpImageUnload) {
+                    if (const auto it = gpuImages.find(pid); it != gpuImages.end())
+                        std::erase_if(it->second, [base](const ImageRange& r) { return r.base == base; });
+                }
+                return;
+            }
 
             if (op == kOpImageLoad || op == kOpDcStart) {
                 const auto size = readPtr(data, ptr, ptr);
@@ -681,6 +790,19 @@ bool KernelTrace::start(const KernelTraceOptions& options)
         m->enableFlags |= EVENT_TRACE_FLAG_CSWITCH;
     if (options.shaderCache)
         m->enableFlags |= EVENT_TRACE_FLAG_FILE_IO_INIT | EVENT_TRACE_FLAG_DISK_FILE_IO;
+    if (options.compilerSampling) {
+        enableProfilePrivilege();
+        m->enableFlags |= EVENT_TRACE_FLAG_PROFILE;
+        // Sampling interval (100 ns units); Windows' default is 1 ms.
+        TRACE_PROFILE_INTERVAL interval{};
+        ULONG returned = 0;
+        if (TraceQueryInformation(0, TraceSampledProfileIntervalInfo, &interval, sizeof(interval), &returned) ==
+                ERROR_SUCCESS &&
+            interval.Interval > 0)
+            m->sampleUs = interval.Interval / 10.0;
+        else
+            m->sampleUs = 1000.0;
+    }
 
     {
         std::lock_guard lock(m->mutex);
@@ -696,6 +818,11 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     m->maxBucketSeen = 0;
     m->shaderCacheFiles.clear();
     m->shaderCacheKeys.clear();
+    m->gpuImages.clear();
+    m->profileSamples = 0;
+    m->gameSamples = 0;
+    for (auto& c : m->moduleSamples)
+        c = 0;
     {
         std::lock_guard lock(m->mutex);
         m->shaderCachePaths.clear();
@@ -832,6 +959,13 @@ TraceDiagnostics KernelTrace::diagnostics() const
     {
         std::lock_guard lock(m->mutex);
         d.shaderCachePaths = m->shaderCachePaths;
+    }
+    d.profileSamples = m->profileSamples;
+    d.gameSamples = m->gameSamples;
+    d.sampleIntervalUs = m->sampleUs;
+    for (std::size_t i = 0; i < std::size(kGpuModules); ++i) {
+        if (const auto n = m->moduleSamples[i].load(); n > 0)
+            d.gpuModuleSamples.emplace_back(std::string{kGpuModules[i].name} + (kGpuModules[i].compiler ? " (compiler)" : ""), n);
     }
     d.malformed = c.malformed;
     d.cpuBucketsFinished = c.buckets;

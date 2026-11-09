@@ -33,6 +33,7 @@ void EventTimeline::clear()
     m_gameMigrations = 0;
     m_gameCrossCcd = 0;
     m_backgroundUs = 0.0;
+    m_shaderCompileUs = 0.0;
     m_bucketCoverageUs = 0.0;
     m_topBackground.clear();
     // topology is a property of the machine, keep it
@@ -112,6 +113,7 @@ void EventTimeline::appendCpuBuckets(std::span<const CpuBucket> buckets)
         m_gameMigrations += b.gameMigrations;
         m_gameCrossCcd += b.gameCrossCcdMigrations;
         m_backgroundUs += b.backgroundUs;
+        m_shaderCompileUs += b.shaderCompileUs;
         m_bucketCoverageUs += toMicroseconds(b.endQpc - b.startQpc);
         if (b.topBackgroundPid != 0)
             m_topBackground[b.topBackgroundPid] += b.topBackgroundUs;

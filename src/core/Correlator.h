@@ -42,6 +42,8 @@ struct CorrelatorConfig {
     // Shader cache writes: right at the frame = strong evidence. Drivers (AMD)
     // also write their cache in batches, seconds after the compile, so writes
     // near the frame still count, with lower confidence.
+    double compileMinMs = 5.0;       // sampled shader compiler time on game threads in the frame ...
+    double compileShare = 0.15;      // ... and at least this share of the excess
     double shaderAfterMs = 250.0;
     double shaderNearBeforeMs = 2000.0;
     double shaderNearAfterMs = 5000.0;
@@ -68,6 +70,7 @@ struct WindowEvidence {
 
     std::size_t gameShaderWrites = 0;     // in [frame start, frame end + shaderAfterMs]
     std::uint64_t gameShaderBytes = 0;
+    double shaderCompileUs = 0.0;         // sampled compiler time on game threads (all cores)
     std::size_t nearShaderWrites = 0;     // in the wider "near" window
     std::optional<double> nearestShaderGapMs; // write time - frame end, closest one
 

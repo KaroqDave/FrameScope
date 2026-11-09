@@ -83,6 +83,7 @@ struct CpuBucket {
     std::array<float, kMaxCcds> gameUsByCcd{};   // game threads' CPU time per CCD
     std::uint16_t gameMigrations = 0;            // game thread resumed on another core
     std::uint16_t gameCrossCcdMigrations = 0;    // ... on another CCD (cold cache)
+    float shaderCompileUs = 0.0f;                // game CPU time inside a shader compiler DLL (sampled)
     float backgroundUs = 0.0f;                   // all other non-idle processes, all cores
     std::uint32_t topBackgroundPid = 0;
     float topBackgroundUs = 0.0f;
