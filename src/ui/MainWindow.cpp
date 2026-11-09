@@ -651,6 +651,8 @@ void MainWindow::saveSession()
     s.spikes = m_session.spikes();
     s.findings = currentFindings();
     s.drivers = currentDrivers();
+    s.gamePid = m_gamePid;
+    s.shaderWrites = core::shaderWritesForSession(m_timeline, m_session.frames());
     try {
         core::saveSession(path.toStdWString(), s);
         log(tr("Saved session to %1").arg(path));

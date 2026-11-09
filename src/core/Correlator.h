@@ -39,7 +39,12 @@ struct CorrelatorConfig {
     double ccdOffShareAboveNormal = 0.25; // ... and this much above the session's average share
 
 
-    double shaderAfterMs = 250.0;    // cache writes can land shortly after the compile finished
+    // Shader cache writes: right at the frame = strong evidence. Drivers (AMD)
+    // also write their cache in batches, seconds after the compile, so writes
+    // near the frame still count, with lower confidence.
+    double shaderAfterMs = 250.0;
+    double shaderNearBeforeMs = 2000.0;
+    double shaderNearAfterMs = 5000.0;
 
     // Turns a PID into a readable name for the evidence text.
     std::function<std::string(std::uint32_t)> processName;
@@ -61,8 +66,10 @@ struct WindowEvidence {
     double maxGameDiskUs = 0.0;
     double maxAnyDiskUs = 0.0;
 
-    std::size_t gameShaderWrites = 0; // in [frame start, frame end + shaderAfterMs]
+    std::size_t gameShaderWrites = 0;     // in [frame start, frame end + shaderAfterMs]
     std::uint64_t gameShaderBytes = 0;
+    std::size_t nearShaderWrites = 0;     // in the wider "near" window
+    std::optional<double> nearestShaderGapMs; // write time - frame end, closest one
 
     // From periodic samples around the window
     bool hasSamples = false;
@@ -84,8 +91,14 @@ struct WindowEvidence {
     double topBackgroundUs = 0.0;
 };
 
+struct ShaderWindow {
+    std::int64_t directTo = 0; // end of the "right at the frame" window
+    std::int64_t nearFrom = 0; // wider window
+    std::int64_t nearTo = 0;
+};
+
 WindowEvidence gatherEvidence(const EventTimeline& timeline, std::int64_t from, std::int64_t to,
-                              std::uint32_t gamePid, std::int64_t shaderTo = 0);
+                              std::uint32_t gamePid, const ShaderWindow& shader = {});
 
 // Decide the most likely cause of one spike.
 Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventTimeline& timeline,

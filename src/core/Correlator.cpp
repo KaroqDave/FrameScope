@@ -125,22 +125,33 @@ bool ramLow(const WindowEvidence& ev, const CorrelatorConfig& cfg)
 } // namespace
 
 WindowEvidence gatherEvidence(const EventTimeline& tl, std::int64_t from, std::int64_t to,
-                              std::uint32_t gamePid, std::int64_t shaderTo)
+                              std::uint32_t gamePid, const ShaderWindow& shader)
 {
     WindowEvidence ev;
     ev.windowUs = tl.toMicroseconds(to - from);
-    shaderTo = std::max(shaderTo, to);
+    const auto directTo = std::max(shader.directTo, to);
+    const auto nearFrom = shader.nearFrom != 0 ? std::min(shader.nearFrom, from) : from;
+    const auto nearTo = std::max(shader.nearTo, directTo);
 
-    for (const SystemEvent* e : tl.overlapping(from, shaderTo)) {
+    for (const SystemEvent* e : tl.overlapping(nearFrom, nearTo)) {
         if (e->kind == EventKind::ShaderCacheWrite) {
-            if (gamePid != 0 && e->processId == gamePid) {
+            // Disk flushes come from the system's lazy writer; their timing says nothing.
+            const bool byGame = e->module != "disk" && (e->processId == gamePid || e->processId == 0) && gamePid != 0;
+            if (!byGame)
+                continue;
+            if (e->startQpc >= from && e->startQpc <= directTo) {
                 ++ev.gameShaderWrites;
                 ev.gameShaderBytes += e->bytes;
+            } else {
+                ++ev.nearShaderWrites;
             }
+            const double gapMs = tl.toMicroseconds(e->startQpc - to) / 1000.0;
+            if (!ev.nearestShaderGapMs || std::fabs(gapMs) < std::fabs(*ev.nearestShaderGapMs))
+                ev.nearestShaderGapMs = gapMs;
             continue;
         }
-        if (e->startQpc > to)
-            continue; // only shader writes use the extended window
+        if (e->startQpc > to || e->endQpc < from)
+            continue; // only shader writes use the wider window
         const double fullUs = tl.toMicroseconds(e->durationQpc());
         const double inWindowUs = clippedUs(tl, *e, from, to);
 
@@ -206,8 +217,12 @@ WindowEvidence gatherEvidence(const EventTimeline& tl, std::int64_t from, std::i
             ev.gameUsByCcd[i] += f * b->gameUsByCcd[i];
         ev.gameCrossCcdMigrations += b->gameCrossCcdMigrations;
         ev.backgroundUs += f * b->backgroundUs;
-        if (b->topBackgroundPid != 0)
+        if (b->topBackgroundPid != 0 && b->topBackgroundPid == gamePid) {
+            // Before the trace knew the game's PID, its threads counted as "other".
+            ev.backgroundUs -= f * b->topBackgroundUs;
+        } else if (b->topBackgroundPid != 0) {
             background[b->topBackgroundPid] += f * b->topBackgroundUs;
+        }
     }
     for (const auto& [pid, us] : background) {
         if (us > ev.topBackgroundUs) {
@@ -229,7 +244,10 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
 
     const auto from = *frame.qpcStart - tl.fromMilliseconds(cfg.preWindowMs);
     const auto to = *frame.qpcEnd;
-    const auto ev = gatherEvidence(tl, from, to, frame.processId, to + tl.fromMilliseconds(cfg.shaderAfterMs));
+    const auto ev = gatherEvidence(tl, from, to, frame.processId,
+                                   {.directTo = to + tl.fromMilliseconds(cfg.shaderAfterMs),
+                                    .nearFrom = *frame.qpcStart - tl.fromMilliseconds(cfg.shaderNearBeforeMs),
+                                    .nearTo = to + tl.fromMilliseconds(cfg.shaderNearAfterMs)});
     const double excessUs = spike.excessMs() * 1000.0;
     const bool cpuOrGpuBound = spike.bound == Bound::Cpu || spike.bound == Bound::Gpu;
     const bool cpuSide = spike.bound == Bound::Cpu || spike.bound == Bound::Stall;
@@ -255,6 +273,13 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
                     std::format("Game wrote {} shader cache entr{} ({:.0f} KB); should be gone on the next run of this scene",
                                 ev.gameShaderWrites, ev.gameShaderWrites == 1 ? "y" : "ies",
                                 static_cast<double>(ev.gameShaderBytes) / 1024.0));
+    }
+    if (ev.nearShaderWrites > 0 && ev.nearestShaderGapMs && spike.bound != Bound::Gpu) {
+        const double gapS = *ev.nearestShaderGapMs / 1000.0;
+        return make(Cause::ShaderCompile, Side::Game, spike.bound == Bound::Cpu ? 0.55 : 0.45,
+                    std::format("Shader cache written {:.1f} s {} this frame (drivers write their cache in batches); "
+                                "likely a shader compile",
+                                std::fabs(gapS), gapS >= 0 ? "after" : "before"));
     }
 
     // 3. GPU clocks dropped hard (thermal, power brake, HW slowdown).

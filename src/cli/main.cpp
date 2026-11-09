@@ -120,6 +120,13 @@ int main(int argc, char** argv)
                 out(stdout, "  [{}] {}: {}", toString(f.level), f.title, f.detail);
         }
 
+        if (!run.meta.shaderWrites.empty()) {
+            std::size_t disk = 0;
+            for (const auto& w : run.meta.shaderWrites)
+                disk += w.disk;
+            out(stdout, "\nShader cache: {} writes, {} disk flushes", run.meta.shaderWrites.size() - disk, disk);
+        }
+
         std::optional<RunComparison> comparison;
         if (!comparePath.empty()) {
             const auto second = load(comparePath);

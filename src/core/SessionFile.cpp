@@ -1,5 +1,6 @@
 #include "core/SessionFile.h"
 
+#include <algorithm>
 #include <charconv>
 #include <format>
 #include <fstream>
@@ -78,6 +79,7 @@ void saveSession(const std::filesystem::path& path, const SavedSession& s)
     out << "app\t" << clean(s.application) << '\n';
     out << "created\t" << clean(s.createdAt) << '\n';
     out << "sensors\t" << clean(s.sensors) << '\n';
+    out << "gamepid\t" << s.gamePid << '\n';
 
     out << "[frames]\n";
     for (const auto& f : s.frames)
@@ -105,8 +107,29 @@ void saveSession(const std::filesystem::path& path, const SavedSession& s)
         out << std::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", clean(d.module), d.dpcCount, d.isrCount, d.maxDpcUs,
                            d.maxIsrUs, d.totalUs, d.over500us, d.over1ms);
     }
+    out << "[shader]\n";
+    for (const auto& w : s.shaderWrites)
+        out << std::format("{}\t{}\t{}\t{}\n", w.timeSeconds, w.processId, w.bytes, w.disk ? 1 : 0);
+
     if (!out)
         throw std::runtime_error("Write failed: " + path.string());
+}
+
+std::vector<ShaderWriteRecord> shaderWritesForSession(const EventTimeline& tl, std::span<const FrameRecord> frames)
+{
+    std::vector<ShaderWriteRecord> out;
+    const auto ref = std::ranges::find_if(frames, [](const FrameRecord& f) { return f.qpcStart.has_value(); });
+    if (ref == frames.end())
+        return out;
+    // Session time of the reference frame's start
+    const double refStartS = ref->timeSeconds - ref->frameTimeMs / 1000.0;
+    for (const auto& e : tl.events()) {
+        if (e.kind != EventKind::ShaderCacheWrite)
+            continue;
+        const double t = refStartS + tl.toMicroseconds(e.startQpc - *ref->qpcStart) / 1e6;
+        out.push_back({t, e.processId, e.bytes, e.module == "disk"});
+    }
+    return out;
 }
 
 bool isSessionFile(const std::filesystem::path& path)
@@ -149,6 +172,8 @@ SavedSession loadSession(const std::filesystem::path& path)
                 s.createdAt = value;
             else if (f[0] == "sensors")
                 s.sensors = value;
+            else if (f[0] == "gamepid")
+                s.gamePid = static_cast<std::uint32_t>(num(value));
         } else if (section == "[frames]") {
             const auto f = splitTabs(line);
             if (f.size() < 4)
@@ -184,6 +209,12 @@ SavedSession loadSession(const std::filesystem::path& path)
                 throw std::runtime_error("Bad finding line in session file");
             s.findings.push_back({enumOf<Finding::Level>(f[0], static_cast<int>(Finding::Level::Problem)),
                                   std::string{f[1]}, std::string{f[2]}});
+        } else if (section == "[shader]") {
+            const auto f = splitTabs(line);
+            if (f.size() < 4)
+                throw std::runtime_error("Bad shader line in session file");
+            s.shaderWrites.push_back({num(f[0]), static_cast<std::uint32_t>(num(f[1])),
+                                      static_cast<std::uint32_t>(num(f[2])), f[3] == "1"});
         } else if (section == "[drivers]") {
             const auto f = splitTabs(line);
             if (f.size() < 8)

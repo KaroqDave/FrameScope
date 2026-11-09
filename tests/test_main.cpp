@@ -915,9 +915,16 @@ void correlateShaderCompile()
     CHECK(near(a.confidence, 0.8));
     CHECK(a.detail.starts_with("Game wrote 1 shader cache entry (48 KB)"));
 
-    // Too late (frame ended at 1040 ms, write at 1400 ms) or another process: no.
+    // A batched write 2 s later: still likely a compile, lower confidence.
+    Fixture near_(Bound::Cpu);
+    near_.add(ev(EventKind::ShaderCacheWrite, 3040, 0, 42));
+    const auto n = attribute(near_.spike, near_.frame, near_.tl);
+    CHECK(n.cause == Cause::ShaderCompile && near(n.confidence, 0.55));
+    CHECK(n.detail.starts_with("Shader cache written 2.0 s after this frame"));
+
+    // Too late (frame ended at 1040 ms, write 6 s later) or another process: no.
     Fixture late(Bound::Cpu);
-    late.add(ev(EventKind::ShaderCacheWrite, 1400, 0, 42));
+    late.add(ev(EventKind::ShaderCacheWrite, 7100, 0, 42));
     CHECK(attribute(late.spike, late.frame, late.tl).cause == Cause::GameCpu);
     Fixture other(Bound::Cpu);
     other.add(ev(EventKind::ShaderCacheWrite, 1010, 0, 7));
@@ -932,17 +939,35 @@ void correlateShaderCompile()
     const auto fs = sessionFindings(f.tl, nullptr);
     CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "Shaders compiled during play"; }));
 
-    // Saved sessions keep the new cause
+    // Saved sessions keep the new cause and the shader writes
     auto [frames, spikes] = makeRun(5, {2});
     spikes[0].attribution = a;
     SavedSession s;
     s.frames = frames;
     s.spikes = spikes;
+    s.gamePid = 42;
+    s.shaderWrites = {{1.25, 42, 4096, false}, {3.5, 0, 65536, true}};
     const auto path = std::filesystem::temp_directory_path() / "framescope_shader.fscope";
     saveSession(path, s);
     const auto r = loadSession(path);
     std::filesystem::remove(path);
     CHECK(r.spikes[0].attribution && r.spikes[0].attribution->cause == Cause::ShaderCompile);
+    CHECK(r.gamePid == 42 && r.shaderWrites.size() == 2);
+    if (r.shaderWrites.size() == 2)
+        CHECK(near(r.shaderWrites[0].timeSeconds, 1.25) && !r.shaderWrites[0].disk && r.shaderWrites[1].disk);
+
+    // Mapping timeline events onto session time
+    EventTimeline tl(kFreq);
+    std::vector<FrameRecord> fr(3, frame(10.0));
+    for (int i = 0; i < 3; ++i) {
+        fr[i].timeSeconds = 0.010 * (i + 1);
+        fr[i].qpcStart = ms2t(5000 + i * 10.0);
+        fr[i].qpcEnd = ms2t(5010 + i * 10.0);
+    }
+    auto sw = ev(EventKind::ShaderCacheWrite, 5500, 0, 42);
+    tl.append(std::span{&sw, 1});
+    const auto mapped = shaderWritesForSession(tl, fr);
+    CHECK(mapped.size() == 1 && near(mapped[0].timeSeconds, 0.5, 1e-9));
 }
 
 void perfLimitCounter()
@@ -1050,6 +1075,18 @@ void rareGpuDropsAndDiskFlushes()
     CHECK(attribute(fx.spike, fx.frame, fx.tl).cause == Cause::GameCpu);
 }
 
+void backgroundExcludesGame()
+{
+    // Before the trace knew the game's PID, the game itself was the top "background" process.
+    Fixture f(Bound::Cpu);
+    std::vector<CpuBucket> bs;
+    for (double t = 990; t < 1040; t += 10)
+        bs.push_back(bucket(t, 0, 0, 43000, 42, 21000)); // PID 42 = the game
+    f.tl.appendCpuBuckets(bs);
+    const auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause != Cause::BackgroundLoad);
+}
+
 } // namespace
 
 int main()
@@ -1095,6 +1132,7 @@ int main()
         {"ccdRelativeToSession", ccdRelativeToSession},
         {"stutterPattern", stutterPattern},
         {"rareGpuDropsAndDiskFlushes", rareGpuDropsAndDiskFlushes},
+        {"backgroundExcludesGame", backgroundExcludesGame},
     };
 
     for (const auto& [name, fn] : tests) {
