@@ -547,9 +547,18 @@ void MainWindow::onFrames(const std::vector<core::FrameRecord>& frames)
         log(tr("Game process: %1 (PID %2)").arg(qs(m_application)).arg(m_gamePid));
     }
 
-    if (m_session.frameGeneration().empty() && !m_capture.parser().frameGenerationName().empty()) {
-        m_session.setFrameGeneration(m_capture.parser().frameGenerationName());
-        log(tr("Frame generation detected: %1").arg(qs(m_session.frameGeneration())));
+    if (m_session.frameGeneration().empty()) {
+        // Labelled by PresentMon (AFMF, FSR-FG, XeSS-FG), or found in the present pattern (DLSS-FG).
+        auto name = m_capture.parser().frameGenerationName();
+        if (name.empty()) {
+            name = m_capture.frameGenerationFilter().description();
+            if (!name.empty() && !m_frameGenLibraries.empty())
+                name = m_frameGenLibraries.front() + " " + name;
+        }
+        if (!name.empty()) {
+            m_session.setFrameGeneration(name);
+            log(tr("Frame generation detected: %1").arg(qs(name)));
+        }
     }
 
     // Sorting while inserting would move rows around; pause it.
@@ -886,6 +895,11 @@ void MainWindow::saveDiagnostics()
     o << "Display data " << (parser.hasDisplayTimes() ? "yes" : "no") << ", frame types "
       << (parser.hasFrameType() ? "yes" : "no") << ", generated frame rows " << parser.generatedRows()
       << (parser.frameGenerationName().empty() ? QString{} : QStringLiteral(" (%1)").arg(qs(parser.frameGenerationName()))) << "\n";
+    o << "FG pattern   " << (m_capture.frameGenerationFilter().mergedFrames() > 0
+                                 ? QStringLiteral("%1 generated frames folded in (%2)")
+                                       .arg(m_capture.frameGenerationFilter().mergedFrames())
+                                       .arg(qs(m_capture.frameGenerationFilter().description()))
+                                 : QStringLiteral("not seen")) << "\n";
     o << "QPC times    " << (parser.hasQpcTimes() ? "yes" : "no (spikes can't be matched to system events)") << "\n";
     o << "Swap chain   " << qs(parser.lockedSwapChain()) << " (changed " << parser.swapChainChanges() << " times)\n";
     o << "Skipped rows " << parser.skippedRows() << "\n";

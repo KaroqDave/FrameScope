@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/FrameGenerationFilter.h"
 #include "core/FrameRecord.h"
 #include "core/PresentMonCsvParser.h"
 #include "core/PresentMonInfo.h"
@@ -41,6 +42,8 @@ public:
     [[nodiscard]] bool isRunning() const;
     [[nodiscard]] std::uint32_t processId() const { return static_cast<std::uint32_t>(m_process.processId()); }
     [[nodiscard]] const core::PresentMonCsvParser& parser() const noexcept { return m_parser; }
+    // Finds frame generation PresentMon doesn't label (DLSS-FG) from the present pattern.
+    [[nodiscard]] const core::FrameGenerationFilter& frameGenerationFilter() const noexcept { return m_filter; }
     [[nodiscard]] const QString& commandLine() const noexcept { return m_commandLine; }
     // Version and optional features of the PresentMon used for the last start.
     [[nodiscard]] const core::PresentMonInfo& info() const noexcept { return m_info; }
@@ -65,6 +68,7 @@ private:
 
     void probe(const QString& presentMonPath);
     core::PresentMonCsvParser m_parser;
+    core::FrameGenerationFilter m_filter;
     QByteArray m_lineBuffer;
 };
 

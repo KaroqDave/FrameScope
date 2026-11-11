@@ -22,6 +22,8 @@ PresentMonCapture::PresentMonCapture(QObject* parent)
     connect(&m_process, &QProcess::started, this, &PresentMonCapture::started);
     connect(&m_process, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus) {
         onStdout(); // flush whatever is left
+        if (auto rest = m_filter.flush(); !rest.empty())
+            emit framesCaptured(rest);
         emit stopped(exitCode);
     });
     connect(&m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError err) {
@@ -50,6 +52,7 @@ void PresentMonCapture::start(const Options& options)
     }
 
     m_parser.reset();
+    m_filter.reset();
     m_parser.setQpcFrequency(options.qpcFrequency);
     m_lineBuffer.clear();
     m_presentMonPath = options.presentMonPath;
@@ -126,8 +129,10 @@ void PresentMonCapture::onStdout()
          nl = m_lineBuffer.indexOf('\n', start)) {
         const auto line = std::string_view{m_lineBuffer.constData() + start,
                                            static_cast<std::size_t>(nl - start)};
-        if (auto rec = m_parser.feedLine(line))
-            frames.push_back(std::move(*rec));
+        if (auto rec = m_parser.feedLine(line)) {
+            for (auto& f : m_filter.push(std::move(*rec)))
+                frames.push_back(std::move(f));
+        }
         start = nl + 1;
     }
     m_lineBuffer.remove(0, start);

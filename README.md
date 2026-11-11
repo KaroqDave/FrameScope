@@ -123,12 +123,21 @@ Every check exists for both vendors; only the source differs.
 | VRAM use of the game | Windows performance counters | same |
 | Shader compiler sampling | `nvgpucomp64.dll` | `amdxc64.dll` |
 | Shader cache writes | `NVIDIA\DXCache`, `GLCache` … | `AMD\DxCache`, `DxcCache` … |
-| Generated frames reported by PresentMon | none so far | AFMF, FSR-FG |
+| Generated frames labelled by PresentMon | none so far | AFMF, FSR-FG |
+| Generated frames found in the present pattern | DLSS Frame Generation, Multi Frame Generation | any SDK that isn't labelled |
 | Frame generation library loaded by the game | DLSS Frame Generation | FSR Frame Generation |
 
-DLSS Frame Generation (and any other technique PresentMon doesn't report) can't be separated
-from rendered frames. FrameScope then shows **Frame generation library loaded** as a hint that
-FPS and frame times may include generated frames. Intel XeSS-FG is covered the same way.
+**DLSS Frame Generation** isn't labelled by PresentMon, so FrameScope finds it in the rhythm of
+the presents: per rendered frame there is one long gap and 1–5 gaps near zero (the generated
+frames are presented almost at the same moment), group after group, while the frames still
+reach the screen evenly. When at least 80% of the groups in a window of 96 presents have the
+same size, the generated frames are folded into their rendered frame. Spikes, FPS and 1% lows
+then describe the game's real frames, exactly as with AFMF. Near-zero frames that never reach
+the screen (duplicate presents) don't count. Frames pass through this step with a delay of 96
+presents.
+
+If no pattern is found but the game has a frame generation library loaded, FrameScope shows
+**Frame generation library loaded** as a hint.
 
 The NVIDIA side has only been checked against the documentation so far, not on a real card.
 

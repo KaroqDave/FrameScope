@@ -66,6 +66,8 @@ add_library(framescope_core STATIC
     src/core/PresentMonInfo.cpp
     src/core/Overhead.h
     src/core/Overhead.cpp
+    src/core/FrameGenerationFilter.h
+    src/core/FrameGenerationFilter.cpp
 )
 target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

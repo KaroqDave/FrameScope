@@ -1,5 +1,7 @@
 #include "core/PresentMonCsvParser.h"
 
+#include "core/FrameGenerationFilter.h"
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -238,17 +240,22 @@ std::vector<FrameRecord> loadPresentMonCsv(const std::filesystem::path& path, st
         throw std::runtime_error("Cannot open " + path.string());
 
     PresentMonCsvParser parser;
+    FrameGenerationFilter filter; // frame generation PresentMon doesn't label
     std::vector<FrameRecord> frames;
     std::string line;
     while (std::getline(in, line)) {
-        if (auto rec = parser.feedLine(line))
-            frames.push_back(std::move(*rec));
+        if (auto rec = parser.feedLine(line)) {
+            for (auto& f : filter.push(std::move(*rec)))
+                frames.push_back(std::move(f));
+        }
     }
+    for (auto& f : filter.flush())
+        frames.push_back(std::move(f));
 
     if (!parser.hasHeader())
         throw std::runtime_error("No PresentMon header found in " + path.string());
     if (frameGenerationName)
-        *frameGenerationName = parser.frameGenerationName();
+        *frameGenerationName = !parser.frameGenerationName().empty() ? parser.frameGenerationName() : filter.description();
     return frames;
 }
 

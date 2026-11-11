@@ -7,6 +7,7 @@
 #include "core/Correlator.h"
 #include "core/DisplayAnalysis.h"
 #include "core/EventTimeline.h"
+#include "core/FrameGenerationFilter.h"
 #include "core/LatencyStats.h"
 #include "core/Overhead.h"
 #include "core/PresentMonCsvParser.h"
@@ -1457,6 +1458,114 @@ void parserFollowsNewSwapChain()
     CHECK(f && f->processId == 2 && p.swapChainChanges() == 2);
 }
 
+// Presents as PresentMon lists them with unlabelled frame generation: per
+// rendered frame one long gap and `gen` gaps near zero.
+std::vector<FrameRecord> dlssStream(int groups, int gen, double groupMs, int spikeGroup = -1, double startS = 0.0)
+{
+    std::vector<FrameRecord> out;
+    double t = startS;
+    std::int64_t q = 1'000'000'000 + static_cast<std::int64_t>(startS * 1e7);
+    const auto add = [&](double ms, double shown) {
+        auto f = frame(ms, ms * 0.6, ms * 0.9);
+        t += ms / 1000.0;
+        f.timeSeconds = t;
+        f.qpcStart = q;
+        q += static_cast<std::int64_t>(ms * 1e4);
+        f.qpcEnd = q;
+        f.displayTracked = true;
+        f.displayedMs = shown;
+        out.push_back(f);
+    };
+    for (int g = 0; g < groups; ++g) {
+        const double total = g == spikeGroup ? groupMs * 6 : groupMs;
+        const double each = total / (gen + 1);
+        for (int i = 0; i < gen; ++i)
+            add(0.25, each);
+        add(total - 0.25 * gen, each);
+    }
+    return out;
+}
+
+std::vector<FrameRecord> runFilter(const std::vector<FrameRecord>& in, FrameGenerationFilter& filter)
+{
+    std::vector<FrameRecord> out;
+    for (const auto& f : in)
+        for (auto& r : filter.push(f))
+            out.push_back(std::move(r));
+    for (auto& r : filter.flush())
+        out.push_back(std::move(r));
+    return out;
+}
+
+void frameGenerationPattern()
+{
+    {   // DLSS FG 2x at 120 fps shown: 60 rendered frames per second come out
+        FrameGenerationFilter filter;
+        const auto in = dlssStream(600, 1, 16.0, 300);
+        const auto out = runFilter(in, filter);
+        CHECK(out.size() == 600 && filter.generatedPerFrame() == 1 && filter.mergedFrames() == 600);
+        CHECK(filter.description() == "2x, detected from the frame pattern");
+        CHECK(near(out[10].frameTimeMs, 16.0) && out[10].generatedFrames == 1 && near(out[10].generatedDisplayedMs, 8.0));
+        CHECK(near(out[300].frameTimeMs, 96.0));                 // the game's real hitch, full length
+        CHECK(near(out.back().timeSeconds, in.back().timeSeconds)); // time axis unchanged
+        CHECK(*out[10].qpcEnd - *out[10].qpcStart == ms2t(16.0));  // QPC interval covers the whole group
+
+        // Spike detection now sees one clean spike instead of a comb of false ones.
+        CaptureSession cs;
+        for (const auto& f : out)
+            cs.append(f);
+        CHECK(cs.spikes().size() == 1);
+        const auto a = analyzeDisplay(cs.frames(), cs.spikes());
+        CHECK(near(a.generatedShare(), 0.5, 0.01) && near(a.renderedFps, 62.0, 1.0));
+    }
+    {   // Multi Frame Generation 4x
+        FrameGenerationFilter filter;
+        const auto out = runFilter(dlssStream(300, 3, 20.0), filter);
+        CHECK(out.size() == 300 && filter.generatedPerFrame() == 3);
+        CHECK(near(out[5].frameTimeMs, 20.0) && out[5].generatedFrames == 3);
+        CHECK(filter.description().starts_with("4x"));
+    }
+    {   // No frame generation: everything passes through untouched, in order
+        FrameGenerationFilter filter;
+        auto [frames, spikes] = makeRun(20, {5, 10});
+        const auto out = runFilter(frames, filter);
+        CHECK(out.size() == frames.size() && filter.mergedFrames() == 0 && filter.description().empty());
+        CHECK(near(out[100].frameTimeMs, frames[100].frameTimeMs) && out[100].generatedFrames == 0);
+    }
+    {   // Irregular short frames (an uncapped menu, duplicate presents) are not frame generation
+        FrameGenerationFilter filter;
+        std::vector<FrameRecord> in;
+        for (int i = 0; i < 2000; ++i)
+            in.push_back(frame((i * 7919 % 13) < 4 ? 0.3 : 9.0));
+        CHECK(runFilter(in, filter).size() == in.size() && filter.mergedFrames() == 0);
+    }
+    {   // Near-zero frames that never reach the screen are dropped duplicates, not generated frames
+        FrameGenerationFilter filter;
+        auto in = dlssStream(400, 1, 16.0);
+        for (auto& f : in)
+            if (f.frameTimeMs < 1.0)
+                f.displayedMs.reset();
+        CHECK(runFilter(in, filter).size() == in.size() && filter.mergedFrames() == 0);
+    }
+    {   // Switched on in the middle of a capture, then off again
+        FrameGenerationFilter filter;
+        auto [plain, s0] = makeRun(5, {});
+        auto in = plain;
+        const auto fg = dlssStream(400, 1, 16.0, -1, in.back().timeSeconds);
+        in.insert(in.end(), fg.begin(), fg.end());
+        const auto tailStart = in.back().timeSeconds;
+        for (auto f : plain) {
+            f.timeSeconds += tailStart;
+            in.push_back(f);
+        }
+        const auto out = runFilter(in, filter);
+        const auto raw = static_cast<long>(plain.size() * 2 + 800);
+        const auto lost = raw - static_cast<long>(out.size()); // generated frames folded away
+        CHECK(lost >= 390 && lost <= 400);
+        CHECK(std::ranges::none_of(out, [&](const FrameRecord& f) { return f.frameTimeMs > 20.0; }));
+    }
+}
+
 } // namespace
 
 int main()
@@ -1514,6 +1623,7 @@ int main()
         {"timelinePruneEvents", timelinePruneEvents},
         {"nvidiaTemperatureLimit", nvidiaTemperatureLimit},
         {"parserFollowsNewSwapChain", parserFollowsNewSwapChain},
+        {"frameGenerationPattern", frameGenerationPattern},
     };
 
     for (const auto& [name, fn] : tests) {
