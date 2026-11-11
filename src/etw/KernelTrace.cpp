@@ -514,7 +514,8 @@ struct KernelTrace::Impl {
         if (st.tid == 0 || end <= st.since || end - st.since > 10 * freq)
             return; // idle thread, or a nonsense interval
         // FrameScope and PresentMon are measured separately, not as background load.
-        if (st.pid == ownPids[0].load(std::memory_order_relaxed) || st.pid == ownPids[1].load(std::memory_order_relaxed))
+        if (st.pid != 0 && (st.pid == ownPids[0].load(std::memory_order_relaxed) ||
+                            st.pid == ownPids[1].load(std::memory_order_relaxed)))
             return;
         const auto target = targetPid.load(std::memory_order_relaxed);
         const bool game = target != 0 && st.pid == target;
