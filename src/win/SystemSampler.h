@@ -61,6 +61,11 @@ std::uint32_t currentProcessId();
 // game's way. Returns false (and changes nothing) on other CPUs.
 bool keepOffVCacheCores(const core::CpuTopology& topology);
 
+// The same for any CCD: used once it's known where the game really runs (a
+// game Windows doesn't treat as one can sit on the other CCD). childPid: an
+// already running child (PresentMon) to move as well, or 0.
+bool keepOffCcd(const core::CpuTopology& topology, int ccdToAvoid, std::uint32_t childPid);
+
 // Makes Windows end the given child process when FrameScope ends, however it ends.
 void tieToThisProcess(std::uint32_t pid);
 

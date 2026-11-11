@@ -372,6 +372,7 @@ bool MainWindow::startSystemTrace(std::uint32_t targetPid)
     if (!m_affinityChecked) {
         m_affinityChecked = true;
         m_offVCacheCores = win::keepOffVCacheCores(topo);
+        m_avoidedCcd = m_offVCacheCores ? topo.vcacheCcd : -1;
         if (m_offVCacheCores)
             log(tr("FrameScope and PresentMon are kept off the V-Cache cores the game uses."));
     }
@@ -406,6 +407,30 @@ bool MainWindow::startSystemTrace(std::uint32_t targetPid)
     log(tr("System trace running (%1).").arg(qs(m_trace.sessionDescription())));
     m_traceTimer->start();
     return true;
+}
+
+void MainWindow::avoidGameCcd()
+{
+    // The start assumption is "the game runs on the V-Cache CCD". A game that
+    // Windows doesn't treat as one runs on the other CCD, right where FrameScope
+    // was put. Once there are 10 s of data, move to whichever CCD the game uses less.
+    const auto& topo = m_timeline.topology();
+    if (!topo.hasAsymmetricCache() || topo.ccdCount() != 2)
+        return;
+    const auto& us = m_timeline.gameUsByCcdTotal();
+    if (us[0] + us[1] < 10e6)
+        return;
+    const int gameCcd = us[0] >= us[1] ? 0 : 1;
+    const double share = us[static_cast<std::size_t>(gameCcd)] / (us[0] + us[1]);
+    if (share < 0.65 || gameCcd == m_avoidedCcd)
+        return; // spread over both: stay where we are
+    if (win::keepOffCcd(topo, gameCcd, m_capture.processId())) {
+        m_avoidedCcd = gameCcd;
+        m_overhead.offVCacheCores = true; // "kept off the cores the game runs on"
+        if (gameCcd != topo.vcacheCcd)
+            log(tr("The game runs mostly on CCD%1, not on the V-Cache CCD. FrameScope and PresentMon moved to the "
+                   "other cores.").arg(gameCcd));
+    }
 }
 
 void MainWindow::updateOverhead()
@@ -470,6 +495,7 @@ void MainWindow::pumpTrace(bool final)
         }
         m_frameGenLibraries = m_trace.frameGenerationLibraries();
         updateOverhead();
+        avoidGameCcd();
         // Rebuilding the findings walks the whole session; every 5 s is plenty while capturing.
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (final || now - m_lastFindingsUpdate >= 5000) {

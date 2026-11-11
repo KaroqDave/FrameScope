@@ -81,6 +81,7 @@ struct WindowEvidence {
 
     // From periodic samples around the window
     bool hasSamples = false;
+    bool gameInBackground = false;    // some sample saw another window in front
     std::uint64_t gpuReasons = 0;     // OR of all samples
     double gpuMinClockMHz = 0.0;
     double gpuMaxTempC = 0.0;

@@ -1570,7 +1570,7 @@ void frameGenerationPattern()
 void advice()
 {
     // Every cause has advice.
-    for (int c = 0; c <= static_cast<int>(Cause::ShaderCompile); ++c)
+    for (int c = 0; c <= static_cast<int>(Cause::NotInForeground); ++c)
         CHECK(!adviceFor(static_cast<Cause>(c)).empty());
     CHECK(adviceFor(Cause::CcdScheduling).find("Game Bar") != std::string_view::npos);
 
@@ -1647,6 +1647,52 @@ void gameIsNotBackground()
         CHECK(it->detail.find("game.exe") == std::string::npos && it->detail.find("other.exe") != std::string::npos);
 }
 
+void notInForeground()
+{
+    // The user alt-tabs to FrameScope to press Stop: the game loses focus and stumbles.
+    Fixture f(Bound::Cpu);
+    auto s = sample(1010);
+    s.gameInForeground = false;
+    f.tl.appendSamples(std::span{&s, 1});
+    f.add(ev(EventKind::Dpc, 1010, 3.0, 0, "x.sys")); // even with other evidence around
+    const auto a = attribute(f.spike, f.frame, f.tl);
+    CHECK(a.cause == Cause::NotInForeground && a.side == Side::Unknown);
+    CHECK(!countsForVerdict(a.cause) && countsForVerdict(Cause::GameCpu));
+
+    Fixture front(Bound::Cpu);
+    s.gameInForeground = true;
+    front.tl.appendSamples(std::span{&s, 1});
+    CHECK(attribute(front.spike, front.frame, front.tl).cause == Cause::GameCpu);
+
+    // Left out of the verdict, the links and the stutter pattern.
+    std::vector<Spike> spikes(12);
+    for (std::size_t i = 0; i < spikes.size(); ++i)
+        spikes[i].attribution = Attribution{i < 2 ? Cause::GameCpu : Cause::NotInForeground, i < 2 ? Side::Game : Side::Unknown, 0.6, "", ""};
+    const auto d = diagnose(spikes);
+    CHECK(d.attributed == 2 && d.game == 2 && d.verdict.starts_with("Mostly the game: 100%"));
+    std::vector<Finding> fs{{Finding::Level::Problem, "High driver latency", "x"}};
+    linkFindingsToSpikes(fs, spikes);
+    CHECK(fs[0].spikesTotal == 2u);
+
+    std::vector<double> times;
+    for (int i = 0; i < 30; ++i)
+        times.push_back(870.0 + i * 0.5); // all in the last seconds of a 15 min run
+    auto [frames, sp] = makeRun(900, times);
+    CHECK(stutterPatternFindings(frames, sp).size() == 1);
+    for (auto& x : sp)
+        x.attribution = Attribution{Cause::NotInForeground, Side::Unknown, 0.8, "", ""};
+    CHECK(stutterPatternFindings(frames, sp).empty());
+
+    // Round trip through a session file.
+    SavedSession ss;
+    ss.frames = frames;
+    ss.spikes = {sp[0]};
+    const auto path = std::filesystem::temp_directory_path() / "framescope_fg.fscope";
+    saveSession(path, ss);
+    CHECK(loadSession(path).spikes[0].attribution->cause == Cause::NotInForeground);
+    std::filesystem::remove(path);
+}
+
 } // namespace
 
 int main()
@@ -1708,6 +1754,7 @@ int main()
         {"advice", advice},
         {"fsrFrameGenerationRealPattern", fsrFrameGenerationRealPattern},
         {"gameIsNotBackground", gameIsNotBackground},
+        {"notInForeground", notInForeground},
     };
 
     for (const auto& [name, fn] : tests) {

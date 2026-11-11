@@ -320,6 +320,11 @@ struct SystemSampler::Impl {
             s.totalRamMB = totalRam;
             s.vramTotalMB = vramTotal;
             s.gpu = gpuSample();
+            if (pid != 0) {
+                DWORD front = 0;
+                if (const HWND window = GetForegroundWindow(); window && GetWindowThreadProcessId(window, &front))
+                    s.gameInForeground = front == pid;
+            }
             s.qpc = qpcNow();
 
             lock.lock();
@@ -479,17 +484,31 @@ std::uint32_t currentProcessId()
     return GetCurrentProcessId();
 }
 
-bool keepOffVCacheCores(const core::CpuTopology& topology)
+bool keepOffCcd(const core::CpuTopology& topology, int ccdToAvoid, std::uint32_t childPid)
 {
-    if (!topology.hasAsymmetricCache())
+    if (topology.ccdCount() < 2 || ccdToAvoid < 0)
         return false;
     DWORD_PTR mask = 0;
     for (std::size_t cpu = 0; cpu < topology.ccdOfCpu.size() && cpu < sizeof(DWORD_PTR) * 8; ++cpu) {
-        if (topology.ccdOfCpu[cpu] != topology.vcacheCcd)
+        if (topology.ccdOfCpu[cpu] != ccdToAvoid)
             mask |= DWORD_PTR{1} << cpu;
     }
-    // Child processes started afterwards (PresentMon) inherit the mask.
-    return mask != 0 && SetProcessAffinityMask(GetCurrentProcess(), mask) != 0;
+    if (mask == 0)
+        return false;
+    // Child processes started afterwards inherit the mask; one already running is moved too.
+    const bool ok = SetProcessAffinityMask(GetCurrentProcess(), mask) != 0;
+    if (childPid != 0) {
+        if (HANDLE h = OpenProcess(PROCESS_SET_INFORMATION, FALSE, childPid)) {
+            SetProcessAffinityMask(h, mask);
+            CloseHandle(h);
+        }
+    }
+    return ok;
+}
+
+bool keepOffVCacheCores(const core::CpuTopology& topology)
+{
+    return topology.hasAsymmetricCache() && keepOffCcd(topology, topology.vcacheCcd, 0);
 }
 
 void tieToThisProcess(std::uint32_t pid)
@@ -542,6 +561,7 @@ void deleteLegacyRegistrySettings() {}
 double processCpuSeconds(std::uint32_t) { return -1.0; }
 std::uint32_t currentProcessId() { return 0; }
 bool keepOffVCacheCores(const core::CpuTopology&) { return false; }
+bool keepOffCcd(const core::CpuTopology&, int, std::uint32_t) { return false; }
 void tieToThisProcess(std::uint32_t) {}
 
 } // namespace framescope::win

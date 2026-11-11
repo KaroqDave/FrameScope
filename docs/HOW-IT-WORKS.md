@@ -37,6 +37,7 @@ plus 1 ms before it.
 
 | # | Cause | Side | Rule |
 |---|---|---|---|
+| 0 | Game not in foreground | not counted | A sensor sample around the frame saw another window in front |
 | 1 | Driver latency | System | A DPC/ISR ≥ 0.5 ms, and either DPC/ISR time ≥ 15% of the excess, or a single one ≥ 2 ms in a stall |
 | 2 | Shader compilation | Game | CPU-side spike with ≥ 5 ms and ≥ 15% of the excess sampled inside a shader compiler DLL on the game's threads; or the game wrote to a shader cache during the frame (up to 250 ms after); or near it (2 s before to 5 s after, lower confidence) |
 | 3 | GPU throttling | System | Throttle reason from the driver (thermal, power brake, hardware slowdown), or a clock below 75% of its usual full-load value at ≥ 90% load |

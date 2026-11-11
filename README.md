@@ -73,6 +73,7 @@ linked to and what to do.
 | Shader compilation | Game | Fades as the shader cache fills; returns after driver updates |
 | Game CPU work / Game GPU work | Game | The game's own work; lower the matching settings |
 | Unexplained wait | Unknown | Capture again with the full trace; try without V-Sync or limiters |
+| Game not in foreground | not counted | Spikes while another window is in front (alt-tab, stopping the capture) are left out of the verdict |
 
 "Likely cause" means: this is what the system data during that frame points to. It is strong
 evidence, not proof.
@@ -120,7 +121,7 @@ Every check exists for both vendors; only the source differs.
 A stutter tool must not cause stutter.
 
 - On CPUs where one CCD has the 3D V-Cache, FrameScope and PresentMon are pinned to the other
-  cores.
+  cores. If the game turns out to run on the other CCD, they switch sides after 10 seconds.
 - Nothing is drawn while the window is minimised.
 - The finding **FrameScope's own load** shows how many CPU cores measuring used and whether
   Windows had to drop trace events.

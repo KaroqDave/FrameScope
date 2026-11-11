@@ -72,6 +72,7 @@ struct SystemSample {
     std::optional<double> cpuPerfLimitPct; // how much CPU performance is capped (0 = none), see perfLimitFromCounter
     std::optional<double> gameVramMB;      // dedicated VRAM used by the game
     std::optional<double> vramTotalMB;
+    std::optional<bool> gameInForeground;  // the game's window is the active one
     std::optional<GpuSample> gpu;          // NVIDIA (NVML) only for now
 };
 

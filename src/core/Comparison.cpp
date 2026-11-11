@@ -56,7 +56,7 @@ RunSummary summarizeRun(std::span<const FrameRecord> frames, std::span<const Spi
         case Bound::Stall: ++r.stallSpikes; break;
         case Bound::Unknown: break;
         }
-        if (s.attribution && s.attribution->cause != Cause::NoTraceData)
+        if (s.attribution && countsForVerdict(s.attribution->cause))
             ++r.causes[s.attribution->cause];
     }
     return r;

@@ -243,7 +243,7 @@ std::string renderHtmlReport(const ReportData& d)
     if (diag.attributed > 0) {
         std::map<std::pair<Cause, Side>, std::size_t> counts;
         for (const auto& s : d.spikes) {
-            if (s.attribution && s.attribution->cause != Cause::NoTraceData)
+            if (s.attribution && countsForVerdict(s.attribution->cause))
                 ++counts[{s.attribution->cause, s.attribution->side}];
         }
         std::vector<std::pair<std::pair<Cause, Side>, std::size_t>> rows(counts.begin(), counts.end());

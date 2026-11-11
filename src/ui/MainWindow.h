@@ -79,6 +79,7 @@ private:
     void updateVerdict();
     void updateFindings();
     void updateOverhead();
+    void avoidGameCcd();
     [[nodiscard]] std::vector<core::Finding> currentFindings() const;
     [[nodiscard]] std::vector<core::ModuleLatency> currentDrivers() const;
     [[nodiscard]] const core::DisplayAnalysis& displayAnalysis() const;
@@ -110,6 +111,7 @@ private:
     qint64 m_captureStartMs = 0;
     bool m_offVCacheCores = false;
     bool m_affinityChecked = false;
+    int m_avoidedCcd = -1;
     std::vector<std::string> m_frameGenLibraries;
     qint64 m_lastFindingsUpdate = 0;
     qint64 m_lastSpikeTableRebuild = 0;

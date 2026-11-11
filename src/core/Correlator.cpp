@@ -37,6 +37,7 @@ std::string_view toString(Cause c) noexcept
     case Cause::GameGpu:         return "Game GPU work";
     case Cause::UnexplainedWait: return "Unexplained wait";
     case Cause::ShaderCompile:   return "Shader compilation";
+    case Cause::NotInForeground: return "Game not in foreground";
     }
     return "?";
 }
@@ -106,6 +107,8 @@ std::string nameOf(const CorrelatorConfig& cfg, std::uint32_t pid)
 {
     if (pid == 0)
         return "unknown process";
+    if (pid == 4)
+        return "Windows (System)"; // kernel threads; can't be opened by name
     if (cfg.processName) {
         auto name = cfg.processName(pid);
         if (!name.empty())
@@ -185,6 +188,8 @@ WindowEvidence gatherEvidence(const EventTimeline& tl, std::int64_t from, std::i
 
     for (const SystemSample* s : tl.samplesAround(from, to)) {
         ev.hasSamples = true;
+        if (s->gameInForeground && !*s->gameInForeground)
+            ev.gameInBackground = true;
         const auto minOpt = [](std::optional<double>& acc, const std::optional<double>& v) {
             if (v)
                 acc = acc ? std::min(*acc, *v) : *v;
@@ -253,6 +258,13 @@ Attribution attribute(const Spike& spike, const FrameRecord& frame, const EventT
     const double excessUs = spike.excessMs() * 1000.0;
     const bool cpuOrGpuBound = spike.bound == Bound::Cpu || spike.bound == Bound::Gpu;
     const bool cpuSide = spike.bound == Bound::Cpu || spike.bound == Bound::Stall;
+
+    // 0. The game wasn't in front: Windows deprioritises it and many games
+    //    throttle themselves. That is alt-tabbing, not stutter.
+    if (ev.gameInBackground) {
+        return make(Cause::NotInForeground, Side::Unknown, 0.8,
+                    "Another window was in front (alt-tab, or stopping the capture); not counted");
+    }
 
     // 1. Driver latency: DPC/ISR time explains a real share of the delay.
     //    A single long DPC is enough on its own only when neither CPU nor GPU
@@ -407,7 +419,7 @@ Diagnosis diagnose(std::span<const Spike> spikes)
     std::map<std::string, std::size_t> modules;
 
     for (const auto& s : spikes) {
-        if (!s.attribution || s.attribution->cause == Cause::NoTraceData)
+        if (!s.attribution || !countsForVerdict(s.attribution->cause))
             continue;
         const auto& a = *s.attribution;
         ++d.attributed;
@@ -653,8 +665,15 @@ std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames,
         return out; // too short to say anything about a pattern
 
     std::vector<std::size_t> bins(binCount, 0);
-    for (const auto& s : spikes)
+    std::size_t counted = 0;
+    for (const auto& s : spikes) {
+        if (s.attribution && s.attribution->cause == Cause::NotInForeground)
+            continue;
+        ++counted;
         ++bins[std::min(binCount - 1, static_cast<std::size_t>(s.timeSeconds / binSeconds))];
+    }
+    if (counted < 10)
+        return out;
 
     // Fewest bins that hold 60% of the spikes
     std::vector<std::size_t> order(binCount);
@@ -662,13 +681,13 @@ std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames,
     std::ranges::sort(order, [&](std::size_t a, std::size_t b) { return bins[a] > bins[b]; });
     std::size_t covered = 0, used = 0;
     std::vector<std::size_t> busiest;
-    while (used < binCount && 10 * covered < 6 * spikes.size()) {
+    while (used < binCount && 10 * covered < 6 * counted) {
         covered += bins[order[used]];
         busiest.push_back(order[used]);
         ++used;
     }
     const double binShare = static_cast<double>(used) / static_cast<double>(binCount);
-    const double spikeShare = static_cast<double>(covered) / static_cast<double>(spikes.size());
+    const double spikeShare = static_cast<double>(covered) / static_cast<double>(counted);
 
     const auto clock = [](double sec) {
         const auto t = static_cast<int>(sec + 0.5);
@@ -697,7 +716,7 @@ std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames,
         out.push_back({L::Info, "Stutter is spread evenly",
                        std::format("Spikes are spread over the whole session ({:.1f} per minute). Points to something "
                                    "constant: a system issue, or ongoing game work",
-                                   static_cast<double>(spikes.size()) * 60.0 / duration)});
+                                   static_cast<double>(counted) * 60.0 / duration)});
     }
     return out;
 }
@@ -751,7 +770,7 @@ void linkFindingsToSpikes(std::vector<Finding>& findings, std::span<const Spike>
     std::map<Cause, std::size_t> counts;
     std::size_t total = 0;
     for (const auto& s : spikes) {
-        if (s.attribution && s.attribution->cause != Cause::NoTraceData) {
+        if (s.attribution && countsForVerdict(s.attribution->cause)) {
             ++counts[s.attribution->cause];
             ++total;
         }
