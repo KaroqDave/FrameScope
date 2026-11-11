@@ -21,6 +21,10 @@ namespace framescope::core {
 // long gap (the game rendering) and 1-5 gaps near zero, group after group,
 // while the frames still reach the screen evenly.
 //
+// Some frame generation (seen with FSR-FG) instead spaces its frames evenly.
+// Then the gaps say nothing, but the generated presents carry no CPU or GPU
+// work of their own while the rendered one's work spans the whole group.
+//
 // Frames pass through with a delay of `kWindow` frames, because whether a
 // frame is part of such a group can only be told from the frames around it.
 class FrameGenerationFilter {
@@ -43,9 +47,12 @@ private:
     struct Pattern {
         bool active = false;
         int generated = 0;
+        bool byWork = false;       // told apart by CPU/GPU work instead of by the gap
         double shortBelowMs = 0.0;
     };
+    [[nodiscard]] static bool isGenerated(const Pattern& p, const FrameRecord& f);
     [[nodiscard]] Pattern analyse() const;
+    [[nodiscard]] bool analyseAs(Pattern& p) const;
     void emitFront(std::vector<FrameRecord>& out, bool flushing);
 
     std::deque<FrameRecord> m_buffer;

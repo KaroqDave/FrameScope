@@ -15,6 +15,13 @@ constexpr double kShownShare = 0.6;        // generated frames reach the screen;
 constexpr int kMaxGenerated = 5;           // DLSS Multi Frame Generation goes up to 6x
 constexpr std::size_t kAnalyseEvery = 8;
 
+// A present without any CPU or GPU work of its own: PresentMon books the
+// whole group's work on one row and leaves the other rows at exactly zero.
+bool noWorkOfItsOwn(const FrameRecord& f)
+{
+    return f.cpuBusyMs && f.gpuBusyMs && *f.cpuBusyMs == 0.0 && *f.gpuBusyMs == 0.0;
+}
+
 std::optional<double> maxOf(const std::optional<double>& a, const std::optional<double>& b)
 {
     if (!a)
@@ -36,23 +43,46 @@ std::string FrameGenerationFilter::description() const
     return std::format("{}x, detected from the frame pattern", m_lastFactor + 1);
 }
 
+bool FrameGenerationFilter::isGenerated(const Pattern& p, const FrameRecord& f)
+{
+    return p.byWork ? noWorkOfItsOwn(f) : f.frameTimeMs < p.shortBelowMs;
+}
+
 FrameGenerationFilter::Pattern FrameGenerationFilter::analyse() const
 {
-    Pattern p;
     if (m_buffer.size() < kWindow / 2)
-        return p;
+        return {};
 
     double total = 0.0;
     for (const auto& f : m_buffer)
         total += f.frameTimeMs;
-    const double shortBelow = std::min(kShortMaxMs, kShortShare * total / static_cast<double>(m_buffer.size()));
 
-    // Sizes of the runs of near-zero gaps between two long gaps.
+    // 1. Generated frames presented right behind the rendered one: near-zero gaps.
+    Pattern byGap;
+    byGap.shortBelowMs = std::min(kShortMaxMs, kShortShare * total / static_cast<double>(m_buffer.size()));
+    if (analyseAs(byGap))
+        return byGap;
+
+    // 2. Generated frames paced evenly between the rendered ones (seen with
+    //    FSR-FG): the gaps all look alike, but only every other present
+    //    carries CPU/GPU work, and that work spans the whole group.
+    Pattern byWork;
+    byWork.byWork = true;
+    if (analyseAs(byWork))
+        return byWork;
+    return {};
+}
+
+bool FrameGenerationFilter::analyseAs(Pattern& p) const
+{
+    // Sizes of the runs of generated frames between two rendered ones.
     std::array<std::size_t, kMaxGenerated + 2> runs{}; // index = run length, last = longer
     std::size_t groups = 0, shorts = 0, shortsShown = 0, shortsTracked = 0;
-    int run = -1; // -1 until the first long gap, so a cut-off group at the start isn't counted
+    std::size_t spanning = 0;  // rendered frames whose CPU work is longer than their own gap
+    double pendingMs = 0.0;
+    int run = -1; // -1 until the first rendered frame, so a cut-off group at the start isn't counted
     for (const auto& f : m_buffer) {
-        if (f.frameTimeMs < shortBelow) {
+        if (isGenerated(p, f)) {
             ++shorts;
             if (f.displayTracked) {
                 ++shortsTracked;
@@ -60,28 +90,35 @@ FrameGenerationFilter::Pattern FrameGenerationFilter::analyse() const
             }
             if (run >= 0)
                 ++run;
+            pendingMs += f.frameTimeMs;
         } else {
             if (run >= 0) {
                 ++runs[std::min<std::size_t>(static_cast<std::size_t>(run), runs.size() - 1)];
                 ++groups;
+                if (run > 0 && f.cpuBusyMs && *f.cpuBusyMs > f.frameTimeMs + 0.5 * pendingMs)
+                    ++spanning;
             }
             run = 0;
+            pendingMs = 0.0;
         }
     }
     if (groups < kMinGroups || shorts == 0)
-        return p;
+        return false;
 
     const auto best = std::max_element(runs.begin() + 1, runs.end() - 1);
     const auto generated = static_cast<int>(best - runs.begin());
     if (static_cast<double>(*best) < kRegularity * static_cast<double>(groups))
-        return p;
+        return false;
     if (shortsTracked > 0 && static_cast<double>(shortsShown) < kShownShare * static_cast<double>(shortsTracked))
-        return p;
+        return false;
+    // Without the near-zero gaps the work has to prove it: it must reach
+    // back over the generated frames in nearly every group.
+    if (p.byWork && static_cast<double>(spanning) < kRegularity * static_cast<double>(groups))
+        return false;
 
     p.active = true;
     p.generated = generated;
-    p.shortBelowMs = shortBelow;
-    return p;
+    return true;
 }
 
 void FrameGenerationFilter::emitFront(std::vector<FrameRecord>& out, bool flushing)
@@ -98,9 +135,9 @@ void FrameGenerationFilter::emitFront(std::vector<FrameRecord>& out, bool flushi
     FrameRecord f = std::move(m_buffer.front());
     m_buffer.pop_front();
     if (m_pattern.active)
-        m_longsInARow = f.frameTimeMs < m_pattern.shortBelowMs ? 0 : m_longsInARow + 1;
+        m_longsInARow = isGenerated(m_pattern, f) ? 0 : m_longsInARow + 1;
 
-    if (m_pattern.active && f.frameTimeMs < m_pattern.shortBelowMs && m_pendingCount < kMaxGenerated) {
+    if (m_pattern.active && isGenerated(m_pattern, f) && m_pendingCount < kMaxGenerated) {
         // A generated frame: hold it for the rendered frame that follows.
         if (m_pendingCount == 0)
             m_pendingQpcStart = f.qpcStart;

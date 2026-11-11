@@ -1548,6 +1548,46 @@ void frameGenerationPattern()
                 f.displayedMs.reset();
         CHECK(runFilter(in, filter).size() == in.size() && filter.mergedFrames() == 0);
     }
+    {   // Evenly paced frame generation (FSR-FG): all gaps alike, but every
+        // other present has no work of its own and the next one's spans both
+        FrameGenerationFilter filter;
+        std::vector<FrameRecord> in;
+        const auto paced = [&](int groups, int spikeGroup) {
+            for (int g = 0; g < groups; ++g) {
+                const double total = g == spikeGroup ? 90.0 : 18.2;
+                auto gen = frame(total / 2 + 0.1, 0.0, 0.0);
+                auto real = frame(total / 2 - 0.1, total - 0.1, 7.8);
+                for (auto* f : {&gen, &real}) {
+                    f->displayTracked = true;
+                    f->displayedMs = total / 2;
+                    in.push_back(*f);
+                }
+            }
+        };
+        paced(500, 250);
+        const auto out = runFilter(in, filter);
+        CHECK(out.size() == 500 && filter.generatedPerFrame() == 1 && filter.mergedFrames() == 500);
+        CHECK(near(out[10].frameTimeMs, 18.2) && out[10].generatedFrames == 1 && near(*out[10].cpuBusyMs, 18.1));
+        CHECK(near(out[250].frameTimeMs, 90.0));
+
+        // The pacing changes to "right behind the rendered frame" mid-capture
+        // (seen in a real FSR-FG run): still the same 18 ms frames, no spike flood.
+        const auto burst = dlssStream(400, 1, 18.2);
+        in.insert(in.end(), burst.begin(), burst.end());
+        FrameGenerationFilter both;
+        CaptureSession cs;
+        for (const auto& f : runFilter(in, both))
+            cs.append(f);
+        CHECK(cs.frames().size() >= 895 && cs.frames().size() <= 905);
+        CHECK(cs.spikes().size() == 1);
+    }
+    {   // Presents without measured work, but nothing spanning them: not frame generation
+        FrameGenerationFilter filter;
+        std::vector<FrameRecord> in;
+        for (int i = 0; i < 1000; ++i)
+            in.push_back(i % 2 ? frame(9.0, 0.0, 0.0) : frame(9.0, 8.5, 7.0));
+        CHECK(runFilter(in, filter).size() == in.size() && filter.mergedFrames() == 0);
+    }
     {   // Switched on in the middle of a capture, then off again
         FrameGenerationFilter filter;
         auto [plain, s0] = makeRun(5, {});
@@ -1695,6 +1735,64 @@ void notInForeground()
 
 } // namespace
 
+void leadUpToFocusLoss()
+{
+    const auto at = [](double t, Cause c, Side side) {
+        Spike s;
+        s.timeSeconds = t;
+        s.frameTimeMs = 60;
+        s.medianMs = 16;
+        s.attribution = Attribution{c, side, 0.6, "", ""};
+        return s;
+    };
+    // An earlier hitch, a burst that ends in the alt-tab, and one driver hitch inside an older burst.
+    std::vector<Spike> spikes = {
+        at(50.0, Cause::GameCpu, Side::Game),
+        at(96.0, Cause::GameCpu, Side::Game),        // too far back: stays
+        at(97.5, Cause::GameCpu, Side::Game),
+        at(98.2, Cause::GameGpu, Side::Game),
+        at(98.9, Cause::GameCpu, Side::Game),
+        at(99.5, Cause::NotInForeground, Side::Unknown),
+        at(99.9, Cause::NotInForeground, Side::Unknown),
+    };
+    CHECK(markLeadUpToFocusLoss(spikes) == 3);
+    CHECK(spikes[0].attribution->cause == Cause::GameCpu && spikes[1].attribution->cause == Cause::GameCpu);
+    for (int i = 2; i < 7; ++i)
+        CHECK(spikes[i].attribution->cause == Cause::NotInForeground);
+    CHECK(spikes[3].attribution->detail.contains("losing focus"));
+    CHECK(markLeadUpToFocusLoss(spikes) == 0); // nothing left to change
+    CHECK(diagnose(spikes).attributed == 2);
+
+    // A system-side cause stands, and ends the walk; so does the 5 s reach.
+    std::vector<Spike> sys = {
+        at(10.0, Cause::GameCpu, Side::Game),
+        at(10.5, Cause::DriverLatency, Side::System),
+        at(11.0, Cause::GameCpu, Side::Game),
+        at(11.5, Cause::NotInForeground, Side::Unknown),
+    };
+    CHECK(markLeadUpToFocusLoss(sys) == 1);
+    CHECK(sys[0].attribution->cause == Cause::GameCpu && sys[1].attribution->cause == Cause::DriverLatency);
+    std::vector<Spike> lng;
+    for (int i = 0; i < 20; ++i)
+        lng.push_back(at(i * 0.5, i == 19 ? Cause::NotInForeground : Cause::GameCpu, i == 19 ? Side::Unknown : Side::Game));
+    CHECK(markLeadUpToFocusLoss(lng) == 10);
+    CHECK(markLeadUpToFocusLoss(lng) == 0); // spikes marked here don't start a walk of their own
+
+    // The capture ends in the middle of a slowdown, before any focus loss was seen.
+    std::vector<Spike> end = {
+        at(40.0, Cause::GameCpu, Side::Game),
+        at(57.6, Cause::GameCpu, Side::Game),
+        at(58.3, Cause::GameCpu, Side::Game),
+        at(59.1, Cause::GameGpu, Side::Game),
+    };
+    auto calm = end;
+    CHECK(markSlowdownAtCaptureEnd(calm, 75.0) == 0);   // last spike long before the end
+    CHECK(markSlowdownAtCaptureEnd(end, 59.6) == 3);
+    CHECK(end[0].attribution->cause == Cause::GameCpu && end[1].attribution->cause == Cause::NotInForeground);
+    CHECK(end[3].attribution->detail.contains("capture was stopped"));
+    CHECK(markSlowdownAtCaptureEnd(end, 59.6) == 0 && markLeadUpToFocusLoss(end) == 0);
+}
+
 int main()
 {
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
@@ -1748,6 +1846,7 @@ int main()
         {"refreshFindingsFromSavedSession", refreshFindingsFromSavedSession},
         {"overheadAndFrameGenLibraries", overheadAndFrameGenLibraries},
         {"timelinePruneEvents", timelinePruneEvents},
+        {"leadUpToFocusLoss", leadUpToFocusLoss},
         {"nvidiaTemperatureLimit", nvidiaTemperatureLimit},
         {"parserFollowsNewSwapChain", parserFollowsNewSwapChain},
         {"frameGenerationPattern", frameGenerationPattern},

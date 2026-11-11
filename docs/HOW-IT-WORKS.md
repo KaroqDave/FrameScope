@@ -37,7 +37,7 @@ plus 1 ms before it.
 
 | # | Cause | Side | Rule |
 |---|---|---|---|
-| 0 | Game not in foreground | not counted | A sensor sample around the frame saw another window in front |
+| 0 | Game not in foreground | not counted | A sensor sample around the frame saw another window in front. Also: the burst of spikes leading straight into such a spike, and a burst that runs up to the end of the capture (spikes at most 1 s apart, up to 5 s back; spikes with a system-side cause keep it) |
 | 1 | Driver latency | System | A DPC/ISR ≥ 0.5 ms, and either DPC/ISR time ≥ 15% of the excess, or a single one ≥ 2 ms in a stall |
 | 2 | Shader compilation | Game | CPU-side spike with ≥ 5 ms and ≥ 15% of the excess sampled inside a shader compiler DLL on the game's threads; or the game wrote to a shader cache during the frame (up to 250 ms after); or near it (2 s before to 5 s after, lower confidence) |
 | 3 | GPU throttling | System | Throttle reason from the driver (thermal, power brake, hardware slowdown), or a clock below 75% of its usual full-load value at ≥ 90% load |
@@ -68,7 +68,7 @@ problem.
 | Technique | How it is recognised |
 |---|---|
 | AMD AFMF, AMD FSR-FG, Intel XeSS-FG | PresentMon labels the generated frames (`--track_frame_type`, passed when the PresentMon version supports it) |
-| NVIDIA DLSS-FG / Multi Frame Generation, AMD FSR-FG when the game doesn't report it, anything unlabelled | Present pattern: groups of one long gap and 1–5 gaps near zero (below 30% of the average gap and below 4 ms), at least 8 groups in a window of 96 presents, 80% of them the same size, and the near-zero frames must reach the screen |
+| NVIDIA DLSS-FG / Multi Frame Generation, AMD FSR-FG when the game doesn't report it, anything unlabelled | Present pattern: groups of one long gap and 1–5 gaps near zero (below 30% of the average gap and below 4 ms), at least 8 groups in a window of 96 presents, 80% of them the same size, and the near-zero frames must reach the screen. If the generated frames are spaced evenly instead (seen with FSR-FG): presents with exactly 0 CPU and GPU work alternating with presents whose CPU work spans the whole group, same group rules |
 | Neither found | If the game has a frame generation library loaded, a finding says so |
 
 The pattern was confirmed on a real FSR Frame Generation capture (gaps of ~19 ms and ~0.1 ms

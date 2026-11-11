@@ -7,6 +7,7 @@
 #include "core/SpikeDetector.h"
 
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,20 @@ namespace framescope::core {
 
 // All frames and spikes of one capture, in time order.
 // This is the in-memory timeline M2/M3 will attach system events to.
+// A burst of spikes that runs straight into the game losing focus belongs to
+// that switch (pausing, the task switcher, stopping the capture), not to play:
+// marks the spikes leading up to a "not in foreground" spike the same way.
+// A spike counts as part of the burst while the gap to the next one is at most
+// maxGapS, up to maxReachS before the focus loss. Spikes with a system-side
+// cause keep it and end the walk. Returns how many spikes were changed.
+std::size_t markLeadUpToFocusLoss(std::span<Spike> spikes, double maxGapS = 1.0, double maxReachS = 5.0);
+
+// The same for a burst that runs right up to the end of the capture: stopping
+// it means pausing or leaving the game, and the capture may end before the
+// focus loss is seen.
+std::size_t markSlowdownAtCaptureEnd(std::span<Spike> spikes, double captureEndS, double maxGapS = 1.0,
+                                     double maxReachS = 5.0);
+
 class CaptureSession {
 public:
     explicit CaptureSession(SpikeConfig cfg = {});
@@ -37,6 +52,9 @@ public:
     // Returns how many spikes got a new attribution.
     std::size_t attributePending(const EventTimeline& timeline, double settleMs = 1500.0,
                                  const CorrelatorConfig& cfg = {});
+
+    // The capture has ended: applies the two rules above. Returns the spikes changed.
+    std::size_t closeOut();
 
     [[nodiscard]] Diagnosis diagnosis() const { return diagnose(m_spikes); }
 

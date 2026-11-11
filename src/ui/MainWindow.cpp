@@ -477,6 +477,8 @@ void MainWindow::pumpTrace(bool final)
         const double settleMs = final ? 0.0 : kSettleMs;
         if (m_session.attributePending(m_timeline, settleMs, m_correlatorConfig) > 0)
             m_spikeTableStale = true;
+        if (final && m_session.closeOut() > 0)
+            m_spikeTableStale = true;
         // Rebuilding thousands of rows every second would cost more than the trace itself.
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 minGapMs = m_session.spikes().size() > 1000 ? 10'000 : 0;
