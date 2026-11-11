@@ -1,5 +1,7 @@
-FrameScope - third-party components in this package
-====================================================
+FrameScope itself is released under the MIT License (see LICENSE).
+
+Third-party components in this package
+======================================
 
 Qt 6 (Qt Core, Qt Gui, Qt Widgets and the plugins deployed next to framescope.exe)
   Copyright (C) The Qt Company Ltd. and other contributors.

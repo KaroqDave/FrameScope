@@ -19,5 +19,8 @@ int main(int argc, char* argv[])
 
     framescope::ui::MainWindow window;
     window.show();
+    // "framescope.exe capture.fscope" or a file dropped onto the exe opens it.
+    if (const auto args = QApplication::arguments(); args.size() > 1)
+        window.openPath(args.at(1));
     return QApplication::exec();
 }

@@ -3,6 +3,7 @@
 // Offline analysis: stats, worst spikes, optional HTML report and comparison
 // with a second run of the same sequence (input = run 1, --compare = run 2).
 
+#include "core/Advice.h"
 #include "core/CaptureSession.h"
 #include "core/Comparison.h"
 #include "core/DisplayAnalysis.h"
@@ -127,6 +128,10 @@ int main(int argc, char** argv)
             for (const auto& f : findings)
                 out(stdout, "  [{}] {}: {}{}", toString(f.level), f.title, f.detail,
                     impactText(f).empty() ? std::string{} : " -> " + impactText(f));
+            for (const auto& f : findings) {
+                if (const auto advice = adviceFor(f); !advice.empty())
+                    out(stdout, "  What to do about \"{}\": {}", f.title, advice);
+            }
         }
 
         if (!run.meta.shaderWrites.empty()) {

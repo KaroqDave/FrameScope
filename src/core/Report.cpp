@@ -1,5 +1,6 @@
 #include "core/Report.h"
 
+#include "core/Advice.h"
 #include "core/DisplayAnalysis.h"
 
 #include <algorithm>
@@ -79,6 +80,7 @@ svg.chart { width:100%; height:auto; border-radius:10px; display:block; }
 .legend { color:var(--muted); font-size:12px; margin-top:6px; }
 .legend i { display:inline-block; width:10px; height:10px; border-radius:50%; margin:0 4px 0 12px; vertical-align:-1px; }
 .note { color:var(--muted); font-size:13px; }
+.todo { margin-top:4px; font-size:13px; color:var(--muted); }
 footer { margin-top:40px; color:var(--muted); font-size:12px; }
 )";
 
@@ -176,8 +178,11 @@ std::string renderFindings(const std::vector<Finding>& findings)
     std::string h = "<table><tr><th>Status</th><th>Check</th><th>Details</th>";
     h += linked ? "<th class=\"num\">Spikes</th></tr>" : "</tr>";
     for (const auto& f : findings) {
-        h += std::format(R"(<tr><td><span class="tag {}">{}</span></td><td>{}</td><td>{}</td>)",
-                         levelClass(f.level), toString(f.level), htmlEscape(f.title), htmlEscape(f.detail));
+        const auto advice = adviceFor(f);
+        h += std::format(R"(<tr><td><span class="tag {}">{}</span></td><td>{}</td><td>{}{}</td>)",
+                         levelClass(f.level), toString(f.level), htmlEscape(f.title), htmlEscape(f.detail),
+                         advice.empty() ? std::string{}
+                                        : std::format(R"(<div class="todo"><b>What to do:</b> {}</div>)", htmlEscape(advice)));
         if (linked)
             h += std::format(R"(<td class="num">{}</td>)", f.spikes ? std::format("{}", *f.spikes) : std::string{"—"});
         h += "</tr>";
@@ -243,11 +248,13 @@ std::string renderHtmlReport(const ReportData& d)
         }
         std::vector<std::pair<std::pair<Cause, Side>, std::size_t>> rows(counts.begin(), counts.end());
         std::ranges::sort(rows, std::greater{}, &decltype(rows)::value_type::second);
-        h += "<h2>Causes</h2><table><tr><th>Cause</th><th>Side</th><th class=\"num\">Spikes</th><th class=\"num\">Share</th></tr>";
+        h += "<h2>Causes</h2><table><tr><th>Cause</th><th>Side</th><th class=\"num\">Spikes</th><th class=\"num\">Share</th>"
+             "<th>What to do</th></tr>";
         for (const auto& [key, n] : rows) {
-            h += std::format(R"(<tr><td>{}</td><td><span class="tag {}">{}</span></td><td class="num">{}</td><td class="num">{:.0f}%</td></tr>)",
+            h += std::format(R"(<tr><td>{}</td><td><span class="tag {}">{}</span></td><td class="num">{}</td><td class="num">{:.0f}%</td><td>{}</td></tr>)",
                              toString(key.first), sideClass(key.second), toString(key.second), n,
-                             100.0 * static_cast<double>(n) / static_cast<double>(diag.attributed));
+                             100.0 * static_cast<double>(n) / static_cast<double>(diag.attributed),
+                             htmlEscape(adviceFor(key.first)));
         }
         h += "</table>";
     }

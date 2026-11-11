@@ -1,6 +1,6 @@
-**Beta:** this is the first public build. Everything is tested in CI, but the system trace
-(ETW), the sensors and the cause detection have not been verified on many machines yet.
-Bug reports with **Tools → Save diagnostics** attached are very welcome.
+**Beta.** The analysis has been checked on a handful of real captures, all on AMD hardware.
+The NVIDIA side, frame generation and shader-compile detection still need confirmation on real
+systems. Bug reports with **Tools → Save diagnostics** attached are very welcome.
 
 ### Which download?
 
@@ -15,8 +15,9 @@ Bug reports with **Tools → Save diagnostics** attached are very welcome.
    https://github.com/GameTechDev/PresentMon/releases
 2. Start `framescope.exe` (it asks for admin rights: needed for the system trace).
 3. Optional: run **Idle baseline** once to check the PC without a game.
-4. Enter the game's `.exe` name, keep **System trace** on, and press **Start capture**.
+4. Enter the game's `.exe` name, keep **System trace** on, press **Start capture** and play.
+5. Press **Stop** and read the verdict and the **Findings** tab.
 
-Quick system check without the GUI: `framescope-latency.exe --seconds 30` (as admin).
+Full guide: https://github.com/KaroqDave/FrameScope#readme
 
-Requirements: Windows 10/11 x64.
+Requirements: Windows 10/11 x64. FrameScope is MIT licensed; see `LICENSE` in the package.

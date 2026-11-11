@@ -68,6 +68,8 @@ add_library(framescope_core STATIC
     src/core/Overhead.cpp
     src/core/FrameGenerationFilter.h
     src/core/FrameGenerationFilter.cpp
+    src/core/Advice.h
+    src/core/Advice.cpp
 )
 target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

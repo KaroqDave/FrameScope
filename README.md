@@ -1,333 +1,169 @@
 # FrameScope
 
-Tells you whether game stutter comes from **your PC** or from **the game**.
+**Is the stutter coming from your PC or from the game?**
 
-FrameScope records every frame with [PresentMon](https://github.com/GameTechDev/PresentMon),
-detects stutter spikes, and (from M2 on) matches each spike against what the system was doing
-at that moment: DPC latency, paging, throttling, background load, CCD placement.
+FrameScope records every frame of a game, finds the stutter spikes, and checks what your system
+was doing during each one: drivers, CPU scheduling, memory, storage, GPU clocks, background
+programs, shader compilation. Every spike gets a likely cause, and the session gets a verdict.
 
-No injection, no overlay hooks. Everything comes from ETW, so it's safe with anti-cheat.
+![FrameScope main window](docs/screenshot-app.png)
 
-## Status: M4
+- No injection and no overlay: everything comes from Windows' own tracing (ETW), so it works
+  alongside anti-cheat.
+- Portable: unzip and run. One settings file next to the exe, nothing else.
+- Windows 10/11, x64. NVIDIA and AMD graphics cards.
 
-| Milestone | Scope | State |
+> **Beta.** The analysis has been checked on a handful of real captures, all on AMD hardware.
+> The NVIDIA side, frame generation and shader-compile detection are built from documentation
+> and simulated data and still need confirmation on real systems. Reports with
+> **Tools → Save diagnostics** attached are very welcome.
+
+## Download
+
+Get the latest build from the [Releases](https://github.com/KaroqDave/FrameScope/releases) page.
+
+| Package | For | AMD GPU sensors |
 |---|---|---|
-| **M1** | PresentMon capture, spike detection, frame-time graph | ✅ done |
-| **M2** | ETW kernel trace: DPC/ISR per driver, hard faults, disk I/O; cause per spike | ✅ done, needs testing on real hardware |
-| **M3** | GPU/CPU throttling, RAM/VRAM pressure, background load, X3D CCD check, findings | ✅ done, needs testing on real hardware |
-| **M4** | Idle baseline, run comparison, session files, HTML report | ✅ done |
+| `FrameScope-…-windows-x64.zip` | Everyone | No (NVIDIA sensors work) |
+| `FrameScope-AMD-…-windows-x64.zip` | PCs with an AMD CPU or GPU | Yes; comes with `EULA-AMD.txt`, which AMD's license requires |
 
-## What M1 does
+You also need the PresentMon console app (`PresentMon-2.x-x64.exe`) from
+[PresentMon's releases](https://github.com/GameTechDev/PresentMon/releases).
 
-- Live capture: starts PresentMon for a given `.exe` and streams its CSV output.
-- Offline: opens any PresentMon CSV (2.x or 1.x column names).
-- **Spike detection:** a frame is a spike if it's **> 2× the rolling median** (120 frames)
-  **and ≥ 8 ms above it**.
-- **Bound hint** per spike:
-  - `CPU` / `GPU`: which side was busy.
-  - `Stall`: neither was busy for most of the frame, so something was waiting
-    (I/O, paging, driver, sync). That's the main system-side suspect M2 will dig into.
-- Stats: average FPS, 1% low, worst frame, spikes per minute.
+## Quick start
 
-## What M2 adds
+1. Unzip FrameScope anywhere and start `framescope.exe`. It asks for admin rights, which the
+   system trace needs.
+2. Point it at the PresentMon exe (**Browse…**), once.
+3. Optional: press **Idle baseline** with no game running. 30 seconds later you know whether
+   the PC has problems before a game even starts.
+4. Enter the game's exe name (e.g. `helldivers2.exe`), keep **System trace** ticked, press
+   **Start capture**, and play. Minimise FrameScope while you do.
+5. Press **Stop**. Read the verdict, the spike table and the **Findings** tab.
 
-With **System trace** on, FrameScope runs a real-time ETW kernel session next to PresentMon.
-Both use raw QPC timestamps (`--qpc_time`), so every spike can be lined up with what the
-system did during that exact frame.
+Each spike gets its cause about 4 seconds after it happens.
 
-Each spike gets a **side**, a **cause**, a **confidence** and the **evidence**:
+## Reading the results
 
-| Cause | Side | When |
+**Verdict:** one line, e.g. *Mostly the game: 86% of spikes. Top cause: Shader compilation.*
+
+**Graph:** frame times with a dot per spike. Red = your system, violet = the game, amber =
+could be either, white = not explained (yet). Mouse wheel zooms, drag pans, double-click
+follows live.
+
+**Spike table:** one row per spike with side, cause, confidence and the evidence. Hover a row
+to see what to do about it. Click a row to jump to it in the graph.
+
+**Findings:** checks over the whole session, worst first. Each one says how many spikes it is
+linked to and what to do.
+
+### Causes
+
+| Cause | Side | What to do |
 |---|---|---|
-| Driver latency | System | DPC/ISR time explains ≥ 15% of the delay, or one DPC/ISR ≥ 2 ms in a frame where neither CPU nor GPU was busy |
-| Hard page faults | Mixed | The game's threads waited on hard faults for ≥ 20% of the delay |
-| Storage wait | Mixed | A disk I/O during the frame took ≥ 30% of the delay |
-| Game CPU work | Game | CPU-bound frame, no big system cause (shader compile, game logic) |
-| Game GPU work | Game | GPU-bound frame, no big system cause |
-| Unexplained wait | Unknown | Nothing busy, no system event found (sync? M3 adds more signals) |
+| Driver latency | System | Update or reinstall the driver named in the evidence; unplug USB devices one at a time |
+| GPU throttling | System | Check temperatures, fan curve, airflow, power cables |
+| CPU throttling | System | Power plan, CPU cooling, BIOS power limits |
+| Low memory | System | Close memory-hungry programs or add RAM |
+| Background load | System | Close the program named in the evidence while playing |
+| CCD scheduling | System | AMD chipset driver, Game Bar and Game Mode on (dual-CCD X3D CPUs) |
+| VRAM full | Mixed | Lower texture quality or resolution |
+| Storage wait | Mixed | Fast SSD, check the drive; otherwise the game is streaming |
+| Hard page faults | Game | The game is loading data; a fast SSD helps |
+| Shader compilation | Game | Fades as the shader cache fills; returns after driver updates |
+| Game CPU work / Game GPU work | Game | The game's own work; lower the matching settings |
+| Unexplained wait | Unknown | Capture again with the full trace; try without V-Sync or limiters |
 
-"Mixed" means it could be either side (e.g. slow storage, or VRAM full because of high settings).
+"Likely cause" means: this is what the system data during that frame points to. It is strong
+evidence, not proof.
 
-Spikes get their cause about 2 s after they happen, once the trace has delivered that window.
-On the graph: red = system, violet = game, amber = mixed, white = pending or unknown.
-A verdict line sums up the session ("Mostly your system: 70% of spikes. Top cause: Driver
-latency (nvlddmkm.sys)").
+![FrameScope report](docs/screenshot-report.png)
 
-The ETW session is a private system logger (Windows 8+), so it doesn't collide with LatencyMon
-or xperf. If that fails it falls back to the classic NT Kernel Logger.
+## Features
 
-## What M3 adds
-
-More signals, sampled 4× per second or built from context switches:
-
-| Source | What | Used for |
+| Feature | Where | What it does |
 |---|---|---|
-| ETW context switches | Game CPU time per CCD, thread migrations, other processes' CPU time (10 ms buckets) | CCD scheduling, background load |
-| `GetLogicalProcessorInformationEx` | L3 cache groups → which CCD has 3D V-Cache | CCD scheduling |
-| PDH (English counter names, works on any Windows language) | Available RAM, page-ins/s, CPU `% Performance Limit`, the game's dedicated VRAM | Low memory, CPU throttling, VRAM full |
-| DXGI | Total VRAM | VRAM full |
-| NVML (from the NVIDIA driver, loaded at runtime) | GPU clock, temperature, power, throttle reasons | GPU throttling |
-| ADLX (from the AMD driver, loaded at runtime) | GPU clock, temperature, hotspot, power, load | GPU throttling (inferred) |
+| Idle baseline | Button / Tools menu | 30 s system check without a game |
+| Sessions | File → Save / Open session | `.fscope` files with frames, spikes, causes and findings |
+| Report | File → Export report | One self-contained HTML file to keep or share |
+| Run comparison | Tools → Compare with earlier run | Two runs of the same scene: fewer spikes on run 2 means shader compilation, spikes at the same moments mean game content, random spikes point to the system |
+| Frame generation | automatic | AFMF, FSR-FG, XeSS-FG and DLSS-FG are recognised; spikes and FPS always describe the frames the game rendered, with FPS on screen shown separately |
+| Display pacing | automatic | Hitches on screen that the game's frame times don't show |
+| Light system trace | Tools menu | Less overhead; shader compilation is then not detected |
+| Diagnostics | Tools → Save diagnostics | One text file with everything needed to debug a capture |
+| Open by file | drag a `.fscope` or CSV onto the exe | Opens it directly |
 
-New causes per spike, checked in this order after driver latency:
+### Command line
 
-| Cause | Side | When |
-|---|---|---|
-| GPU throttling | System | NVML reports HW/SW thermal, power brake or HW slowdown (the normal power cap doesn't count) |
-| Low memory | System | Game hard faults while free RAM was under 1.5 GB or 5% |
-| Hard page faults | Game | Same faults with plenty of free RAM: the game is loading data |
-| VRAM full | Mixed | Game uses ≥ 95% of VRAM: lower texture settings |
-| CPU throttling | System | `% Performance Limit` ≥ 10% in a CPU-side spike |
-| Background load | System | Other processes used ≥ 4 cores on average during the frame, mostly one process |
-| CCD scheduling | System | ≥ 40% of the game's CPU time off the V-Cache CCD, or ≥ 3 cross-CCD migrations in the frame |
+```sh
+framescope-cli capture.csv --top 10                      # analyse a PresentMon CSV
+framescope-cli session.fscope --report report.html       # HTML report from a session
+framescope-cli run1.fscope --compare run2.fscope         # compare two runs
+framescope-latency --seconds 30                          # driver latency check, as admin
+```
 
-**Shader compilation** is detected directly: the trace watches file writes to GPU driver and
-D3D shader caches (`DXCache`, `DxcCache`, `D3DSCache`, `shadercache`, engine PSO caches …).
-A CPU-side spike where the game writes a cache entry during the frame (or up to 250 ms after)
-gets **Shader compilation** (game side) with high confidence. It's checked right after driver
-latency. Games that keep their own shader cache somewhere else aren't seen; for those the
-run comparison still works.
-
-Each check is **linked to the spikes it explains** ("linked to 12 of 107 spikes"), and rated
-by that: a problem behind no spike at all is shown as a warning, a warning behind at least 10% of
-the spikes (and at least 3) becomes a problem. Causes with several spikes but no check of their
-own (storage waits, the game loading data, the game's own work) get one.
-
-The **Findings** tab checks the whole session: worst driver latency, how much of the game's CPU
-time ran on the V-Cache CCD, GPU throttling, minimum free RAM, peak VRAM, CPU limits.
-
-Spikes now get their cause about 4 s after they happen. Context-switch data arrives ~2 s late
-because each CPU's ETW buffer is delivered separately.
-
-### AMD GPUs
-
-On AMD cards the GPU sensors come from **ADLX**, which ships with the Adrenalin driver
-(`amdadlx64.dll`): clock, temperature, hotspot, board power and load.
-
-ADLX doesn't report *why* clocks drop, so FrameScope infers it:
-
-| Flag | When | Counts as a cause |
-|---|---|---|
-| Clock drop under full load | GPU load ≥ 90% and clock < 75% of its usual full-load clock | Yes (GPU throttling, slightly lower confidence than NVIDIA's driver-reported reasons) |
-| Temperature near limit | Hotspot ≥ 105 °C | No, shown as a finding (check airflow and fan curve) |
-
-### NVIDIA and AMD side by side
+## NVIDIA and AMD
 
 Every check exists for both vendors; only the source differs.
 
 | Check | NVIDIA | AMD |
 |---|---|---|
-| Clock, temperature, power, load | NVML (`nvml.dll` from the driver) | ADLX (`amdadlx64.dll` from the driver) |
-| GPU throttling | Reasons reported by the driver; clock-drop inference on old drivers without them | Clock-drop inference |
+| Clock, temperature, power, load | NVML, from the driver | ADLX, from the driver (AMD package) |
+| GPU throttling | Reported by the driver | Inferred from clock drops under full load |
 | Temperature near its limit | Within 3 °C of the driver's slowdown threshold | Hotspot ≥ 105 °C |
-| VRAM use of the game | Windows performance counters | same |
-| Shader compiler sampling | `nvgpucomp64.dll` | `amdxc64.dll` |
-| Shader cache writes | `NVIDIA\DXCache`, `GLCache` … | `AMD\DxCache`, `DxcCache` … |
-| Generated frames labelled by PresentMon | none so far | AFMF, FSR-FG |
-| Generated frames found in the present pattern | DLSS Frame Generation, Multi Frame Generation | any SDK that isn't labelled |
-| Frame generation library loaded by the game | DLSS Frame Generation | FSR Frame Generation |
+| Shader compilation | Sampling of `nvgpucomp64.dll` | Sampling of `amdxc64.dll` |
+| Frame generation | DLSS-FG / MFG, found in the present pattern | AFMF and FSR-FG, labelled by PresentMon |
+| V-Cache CCD check | n/a | Dual-CCD X3D CPUs (e.g. 9950X3D) |
 
-**DLSS Frame Generation** isn't labelled by PresentMon, so FrameScope finds it in the rhythm of
-the presents: per rendered frame there is one long gap and 1–5 gaps near zero (the generated
-frames are presented almost at the same moment), group after group, while the frames still
-reach the screen evenly. When at least 80% of the groups in a window of 96 presents have the
-same size, the generated frames are folded into their rendered frame. Spikes, FPS and 1% lows
-then describe the game's real frames, exactly as with AFMF. Near-zero frames that never reach
-the screen (duplicate presents) don't count. Frames pass through this step with a delay of 96
-presents.
+## FrameScope's own footprint
 
-If no pattern is found but the game has a frame generation library loaded, FrameScope shows
-**Frame generation library loaded** as a hint.
+A stutter tool must not cause stutter.
 
-The NVIDIA side has only been checked against the documentation so far, not on a real card.
+- On CPUs where one CCD has the 3D V-Cache, FrameScope and PresentMon are pinned to the other
+  cores.
+- Nothing is drawn while the window is minimised.
+- The finding **FrameScope's own load** shows how many CPU cores measuring used and whether
+  Windows had to drop trace events.
+- **Files:** `framescope.ini` next to the exe (or in `%LOCALAPPDATA%\FrameScope` if that folder
+  isn't writable). Everything else is written only when you save it. Traces stay in memory.
+- **While capturing,** Windows runs two trace sessions (`FrameScope-Kernel`, `FrameScope`).
+  They end with the capture, and are cleaned up if FrameScope crashes.
 
-On single-CCD CPUs (e.g. 9800X3D, 9850X3D) the CCD check is skipped: there's only one cache.
+## Reporting a problem
 
-**Build notes:** the ADLX SDK is downloaded by CMake at configure time (pinned commit) instead of
-living in this repository, because its license only allows distributing compiled code. It's on
-by default for MSVC builds (what CI uses) and opt-in for MinGW (`-DFRAMESCOPE_WITH_ADLX=ON`),
-since AMD only supports MSVC. `-DFRAMESCOPE_WITH_ADLX=OFF` builds without it. If you publish
-binaries that include ADLX, its license asks for an end-user license agreement; the
-AMD release package ships with `packaging/EULA-AMD.txt` for that reason.
+Use **Tools → Save diagnostics** right after the capture and attach the file to a
+[GitHub issue](https://github.com/KaroqDave/FrameScope/issues), together with the `.fscope`
+session if you can. The diagnostics contain your Windows version, CPU layout, GPU name, driver
+names, the names of programs that showed up as background load, and file paths (PresentMon,
+the settings file, saved files), which can include your Windows user name. Have a look before
+posting it publicly.
 
-## What M4 adds
+## Building
 
-| Feature | Where | What it does |
-|---|---|---|
-| Idle baseline | **Idle baseline** button / Tools menu | 30 s system trace without the game: driver latency, background CPU load, RAM, GPU state. Shows whether the PC has problems before a game even runs. |
-| Sessions | File → Save / Open session | `.fscope` file with frames, spikes, causes, findings and driver stats. Plain tab-separated text. |
-| Run comparison | Tools → Compare with earlier run | Compares the current run (run 2) with an earlier one (run 1, `.fscope` or PresentMon CSV). |
-| Report | File → Export report | One self-contained HTML file: verdict, stats, frame-time chart, causes, system checks, baseline, comparison, worst spikes, driver latency. |
-
-**How the comparison decides** (both runs must play the same sequence from the same start,
-e.g. a benchmark or replay):
-
-| Result | Meaning |
-|---|---|
-| Run 2 has ≥ 60% fewer spikes | Shader compilation: it fades once the shader cache is warm (game) |
-| Same rate, ≥ 60% of spikes at the same moments | Game content such as asset streaming or level traversal (game) |
-| Same rate, < 30% at the same moments | Random stutter: the system, or unpredictable game work |
-| Anything else | Inconclusive |
-
-The two runs are lined up automatically: the tool tries offsets up to ±10 s and keeps the one
-where the most spikes coincide (within 0.5 s).
-
-The CLI can do the same offline:
+Requirements: CMake ≥ 3.25, a C++23 compiler (MSVC 17.8+ or GCC 13+), Qt ≥ 6.4 (Widgets).
 
 ```sh
-framescope-cli run1.fscope --compare run2.csv --report report.html
-```
-
-### framescope-latency
-
-A LatencyMon-style system check without a game:
-
-```sh
-framescope-latency --seconds 60          # as administrator
-framescope-latency --nt-kernel-logger    # force the classic session
-```
-
-It prints the worst drivers by single DPC/ISR plus a verdict (under 0.5 ms good, under 2 ms OK,
-over 2 ms a problem). Run it idle and again with the game running. It also shows the CPU
-topology, which sensors work, and whether context-switch data arrives (~100 buckets/s), which
-makes it the quickest way to check M2/M3 on a new machine.
-
-## Download
-
-Prebuilt Windows builds are on the [Releases](https://github.com/KaroqDave/FrameScope/releases) page:
-
-| Package | AMD GPU sensors | License |
-|---|---|---|
-| `FrameScope-…-windows-x64.zip` | No | Third-party notices only |
-| `FrameScope-AMD-…-windows-x64.zip` | Yes (ADLX) | `EULA-AMD.txt`: required by AMD's ADLX license, use on AMD-based systems only |
-
-### Making a release
-
-Push a tag `vX.Y.Z` (or `vX.Y.Z-beta.N`), or a branch `release/vX.Y.Z-beta.N`. CI builds both
-packages and publishes the release (as a prerelease when the version has a suffix); with the
-branch variant it also creates the tag.
-
-## Build
-
-Requirements: CMake ≥ 3.25, a C++23 compiler (GCC 13 / MSVC 17.8+), Qt ≥ 6.4 (Widgets).
-
-```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/Qt/6.11.0/mingw_64
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build
 ```
 
-Options: `FRAMESCOPE_BUILD_GUI`, `FRAMESCOPE_BUILD_CLI`, `FRAMESCOPE_BUILD_TESTS` (all `ON`).
-The core library and tests are pure C++ with no Qt, so they also build on Linux.
-Without Qt (`-DFRAMESCOPE_BUILD_GUI=OFF`) the Windows targets also cross-compile with MinGW.
+| Option | Default | |
+|---|---|---|
+| `FRAMESCOPE_BUILD_GUI` | `ON` | The Qt application |
+| `FRAMESCOPE_BUILD_CLI` | `ON` | `framescope-cli`, `framescope-latency` |
+| `FRAMESCOPE_BUILD_TESTS` | `ON` | Unit tests (no Qt needed) |
+| `FRAMESCOPE_WITH_ADLX` | `ON` with MSVC | AMD GPU sensors; downloads AMD's ADLX SDK at configure time |
 
-## Run
+The analysis core is plain C++ and also builds on Linux, which is what the tests run on. The
+capture side is Windows only.
 
-1. Download the PresentMon console app (`PresentMon-2.x.x-x64.exe`) from its GitHub releases.
-2. Start `framescope.exe`. It asks for admin rights (PresentMon needs them).
-3. Point it at PresentMon, enter the game's executable name, then **Start capture**.
+How the detection works, with all thresholds: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
 
-Graph controls: mouse wheel zooms, drag pans, double-click returns to live. Click a spike in
-the table to jump to it.
+## License
 
-> The Windows build requests elevation through its manifest. To debug from Qt Creator,
-> run Qt Creator as admin.
+FrameScope is released under the [MIT License](LICENSE).
 
-### CLI
-
-```sh
-framescope-cli capture.csv --top 10
-framescope-cli session.fscope --report report.html
-framescope-cli run1.fscope --compare run2.fscope
-```
-
-## Frame generation and what reaches the screen
-
-FrameScope judges stutter on the frames the **game renders**. On top of that it looks at what
-was actually **shown**:
-
-| Finding | Meaning |
-|---|---|
-| Frame generation is active | Share of generated frames (AMD AFMF, AMD FSR-FG, Intel XeSS-FG), FPS on screen vs. FPS rendered |
-| Rendered frames that never reached the screen | The game renders faster than the display refreshes |
-| Uneven frame pacing on screen | Hitches on screen that the game's frame times don't show: the frames were rendered evenly but shown unevenly (frame generation, V-Sync/VRR, frame limiter) |
-| Frame pacing on screen matches the game | How many of the spikes were visible on screen |
-
-A screen hitch uses the same rule as a spike, applied to how long each frame stayed on screen.
-
-Generated frames are only reported when PresentMon knows about them: FrameScope passes
-`--track_frame_type` if the PresentMon version supports it (it reads `PresentMon --help` once,
-because PresentMon refuses to start on unknown options), and the driver or game SDK has to
-report its generated frames to PresentMon. Without that, generated frames look like ordinary
-frames. Generated frames never count as frames of the game: average FPS, 1% lows and spikes
-always refer to rendered frames.
-
-## FrameScope's own load
-
-A stutter tool must not cause stutter:
-
-- **Off the game's cores:** on CPUs where one CCD has the 3D V-Cache, FrameScope and the
-  PresentMon it starts are pinned to the other CCD.
-- **Cheap trace handling:** no locks or string work per event, 64 MB of trace buffers at most,
-  events are dropped from memory once the spikes around them are explained.
-- **Quiet UI:** nothing is drawn while the window is minimised; findings refresh every 5 s.
-- **Measured:** the finding *FrameScope's own load* shows the CPU cores FrameScope and
-  PresentMon used and whether Windows had to drop trace events. Their CPU time doesn't count
-  as background load.
-- **Tools → Light system trace** turns off CPU sampling and file tracking (the two most
-  frequent event types). Shader compilation is then not detected; everything else stays.
-
-If FrameScope crashes or is killed, PresentMon is ended by Windows and the trace sessions are
-stopped on the way out, or at the latest on the next start.
-
-## Files it writes
-
-FrameScope is portable. Its only file of its own is **`framescope.ini` next to the exe**
-(PresentMon path, game name, System trace on/off, last folder). If that folder isn't writable,
-e.g. under Program Files, the ini goes to the user's config folder instead
-(`%LOCALAPPDATA%\FrameScope\FrameScope\framescope.ini`).
-
-Everything else is only written when you save it (sessions, reports, diagnostics). Traces are
-streamed into memory; no `.etl` or CSV files are created. While capturing, Windows runs the
-trace sessions `FrameScope-Kernel` and `FrameScope`; they end when the capture stops.
-
-Betas 1–5 stored their settings in the registry (`HKCU\Software\FrameScope`); the first start
-of a newer version moves them into the ini and deletes that key.
-
-## Reporting problems
-
-**Tools → Save diagnostics…** writes one text file with everything needed to debug a capture:
-build and OS, admin rights, CPU topology, sensor sources and recent samples, ETW event counters
-(per event type, unresolved drivers, malformed and lost events), the PresentMon command and CSV
-header, causes per spike, findings and the log. `framescope-latency` prints the same trace
-counters at the end.
-
-## Notes
-
-- **The ETW event layouts are untested on real hardware so far.** They're parsed by hand from
-  the documented kernel MOF classes (PerfInfo DPC/ISR, PageFault_HardFault, DiskIo, Thread,
-  Image, CSwitch). If `framescope-latency` shows only `unknown` drivers, no events or no CPU
-  buckets, that's the place to look (`src/etw/KernelTrace.cpp`).
-
-- PresentMon flags used: `--process_name`, `--output_stdout`, `--qpc_time`, `--session_name`,
-  `--stop_existing_session`, `--terminate_existing_session`, plus `--track_frame_type` when
-  the version lists it in `--help` (in `src/capture/PresentMonCapture.cpp`).
-- The CSV parser reads the columns of all PresentMon versions (2.0–2.3.0, the current default
-  and `--v1_metrics`), matching names without regard to case.
-- The parser tracks one swap chain. When that one falls silent and another keeps presenting
-  (resolution or display mode change, game restart, a launcher that presented first), it
-  follows the new one after 240 frames.
-- Generated frames (`FrameType` other than `Application`) are ignored.
-
-## Layout
-
-```
-src/core/      pure C++: CSV parser, spike detector, stats, event timeline, correlator,
-               session files, run comparison, HTML report
-src/etw/       ETW kernel trace (Windows; stub elsewhere)
-src/win/       system sampler (PDH, DXGI, NVML, ADLX), CPU topology, process names
-src/capture/   PresentMon process wrapper (Qt)
-src/ui/        main window, frame-time graph
-src/cli/       offline analyser, latency check
-tests/         dependency-free unit tests (ctest)
-```
+The release packages also contain Qt (LGPL v3) and, in the AMD package, code from AMD's ADLX
+SDK under AMD's own license; see `THIRD-PARTY-NOTICES.txt` and `EULA-AMD.txt` in the packages.
+PresentMon is not included; it is a separate download under the MIT license.

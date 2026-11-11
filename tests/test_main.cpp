@@ -1,5 +1,6 @@
 // Minimal dependency-free tests for the core library. Run via `ctest`.
 
+#include "core/Advice.h"
 #include "core/CaptureSession.h"
 #include "core/Comparison.h"
 #include "core/Report.h"
@@ -1566,6 +1567,32 @@ void frameGenerationPattern()
     }
 }
 
+void advice()
+{
+    // Every cause has advice.
+    for (int c = 0; c <= static_cast<int>(Cause::ShaderCompile); ++c)
+        CHECK(!adviceFor(static_cast<Cause>(c)).empty());
+    CHECK(adviceFor(Cause::CcdScheduling).find("Game Bar") != std::string_view::npos);
+
+    CHECK(adviceFor(Finding{Finding::Level::Problem, "High driver latency", "x"}) == adviceFor(Cause::DriverLatency));
+    CHECK(adviceFor(Finding{Finding::Level::Warning, "Uneven frame pacing on screen", "x"}).starts_with("Try a frame limiter"));
+    CHECK(adviceFor(Finding{Finding::Level::Good, "Enough free RAM", "x"}).empty());
+    CHECK(adviceFor(Finding{Finding::Level::Good, "High driver latency", "x"}).empty()); // fine = nothing to do
+    CHECK(adviceFor(Finding{Finding::Level::Info, "Something unknown", "x"}).empty());
+
+    // The report carries it.
+    auto [frames, spikes] = makeRun(30, {5, 15});
+    spikes[0].attribution = Attribution{Cause::DriverLatency, Side::System, 0.8, "DPC", "a.sys"};
+    spikes[1].attribution = Attribution{Cause::GameCpu, Side::Game, 0.6, "CPU busy", ""};
+    ReportData d;
+    d.frames = frames;
+    d.spikes = spikes;
+    d.findings = {{Finding::Level::Problem, "High driver latency", "a.sys reached 2.5 ms"}};
+    const auto html = renderHtmlReport(d);
+    CHECK(html.find("<th>What to do</th>") != std::string::npos);
+    CHECK(html.find("What to do:</b> Update or reinstall the driver") != std::string::npos);
+}
+
 } // namespace
 
 int main()
@@ -1624,6 +1651,7 @@ int main()
         {"nvidiaTemperatureLimit", nvidiaTemperatureLimit},
         {"parserFollowsNewSwapChain", parserFollowsNewSwapChain},
         {"frameGenerationPattern", frameGenerationPattern},
+        {"advice", advice},
     };
 
     for (const auto& [name, fn] : tests) {

@@ -37,6 +37,10 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override;
 
+    // Opens a saved session (.fscope) or a PresentMon CSV, e.g. a file passed
+    // on the command line or dropped onto the exe.
+    void openPath(const QString& path);
+
 private:
     enum class Mode { Idle, Capture, Baseline };
 
@@ -59,6 +63,8 @@ private:
     // Files
     void openCsv();
     void openSession();
+    void openCsvFile(const QString& path);
+    void openSessionFile(const QString& path);
     void saveSession();
     void exportReport();
     void compareWithEarlierRun();

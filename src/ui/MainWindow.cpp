@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "core/Advice.h"
 #include "core/DisplayAnalysis.h"
 #include "core/PresentMonCsvParser.h"
 #include "core/Report.h"
@@ -56,9 +57,18 @@ constexpr double kSettleMs = 4000.0;
 
 enum SpikeColumn { ColTime, ColFrame, ColExcess, ColBound, ColSide, ColCause, ColConfidence, ColDetail, ColCount };
 
+// Sorts by the number, not by its text ("85.1" would come before "9.3").
+class NumberItem : public QTableWidgetItem {
+public:
+    bool operator<(const QTableWidgetItem& other) const override
+    {
+        return data(Qt::UserRole).toDouble() < other.data(Qt::UserRole).toDouble();
+    }
+};
+
 QTableWidgetItem* numberItem(double value, int decimals)
 {
-    auto* item = new QTableWidgetItem;
+    auto* item = new NumberItem;
     item->setData(Qt::DisplayRole, QString::number(value, 'f', decimals));
     item->setData(Qt::UserRole, value);
     item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -282,6 +292,7 @@ void MainWindow::buildUi()
     main->addWidget(bottom);
     main->setStretchFactor(0, 3);
     main->setStretchFactor(1, 2);
+    main->setSizes({460, 340}); // enough room to read the findings without resizing first
 
     auto* central = new QWidget;
     auto* layout = new QVBoxLayout(central);
@@ -653,6 +664,16 @@ void MainWindow::resetForLoadedData()
     m_application.clear();
 }
 
+void MainWindow::openPath(const QString& path)
+{
+    if (m_mode != Mode::Idle || path.isEmpty())
+        return;
+    if (core::isSessionFile(path.toStdWString()))
+        openSessionFile(path);
+    else
+        openCsvFile(path);
+}
+
 void MainWindow::openCsv()
 {
     const auto path = QFileDialog::getOpenFileName(this, tr("Open PresentMon CSV"), lastDir(),
@@ -660,6 +681,11 @@ void MainWindow::openCsv()
     if (path.isEmpty())
         return;
     rememberDir(path);
+    openCsvFile(path);
+}
+
+void MainWindow::openCsvFile(const QString& path)
+{
 
     try {
         std::string frameGeneration;
@@ -694,6 +720,11 @@ void MainWindow::openSession()
     if (path.isEmpty())
         return;
     rememberDir(path);
+    openSessionFile(path);
+}
+
+void MainWindow::openSessionFile(const QString& path)
+{
 
     try {
         auto s = core::loadSession(path.toStdWString());
@@ -928,6 +959,8 @@ void MainWindow::saveDiagnostics()
         if (const auto impact = core::impactText(f); !impact.empty())
             o << " (" << qs(impact) << ")";
         o << "\n";
+        if (const auto advice = core::adviceFor(f); !advice.empty())
+            o << "    What to do: " << qs(advice) << "\n";
     }
     for (const auto& f : m_baselineFindings)
         o << "[baseline " << QString::fromUtf8(core::toString(f.level).data()) << "] " << qs(f.title) << ": " << qs(f.detail) << "\n";
@@ -1006,6 +1039,8 @@ void MainWindow::updateFindings()
         auto text = QStringLiteral("● %1\n    %2").arg(qs(f.title), qs(f.detail));
         if (const auto impact = core::impactText(f); !impact.empty())
             text += QStringLiteral("\n    → %1").arg(qs(impact));
+        if (const auto advice = core::adviceFor(f); !advice.empty())
+            text += tr("\n    What to do: %1").arg(qs(advice));
         auto* item = new QListWidgetItem(text);
         item->setForeground(findingColor(f.level));
         item->setToolTip(QString::fromUtf8(core::toString(f.level).data()));
@@ -1064,6 +1099,13 @@ void MainWindow::appendSpikeRow(const core::Spike& s)
     conf->setData(Qt::DisplayRole, QStringLiteral("%1%").arg(qRound(a.confidence * 100.0)));
     m_spikeTable->setItem(row, ColConfidence, conf);
     m_spikeTable->setItem(row, ColDetail, textItem(a.detail));
+    // Hovering a spike shows what to do about its cause.
+    const auto advice = core::adviceFor(a.cause);
+    const auto tip = tr("%1\n\nWhat to do: %2").arg(qs(a.detail), QString::fromUtf8(advice.data(), static_cast<qsizetype>(advice.size())));
+    for (int c = 0; c < ColCount; ++c) {
+        if (auto* item = m_spikeTable->item(row, c))
+            item->setToolTip(tip);
+    }
 }
 
 void MainWindow::rebuildSpikeTable()
