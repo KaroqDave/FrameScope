@@ -51,4 +51,15 @@ std::vector<Finding> frameGenerationLibraryFindings(const std::vector<std::strin
     return out;
 }
 
+std::string likelyFrameGenerationLibrary(const std::vector<std::string>& libraries, bool nvidiaGpu)
+{
+    std::vector<std::string> candidates;
+    for (const auto& lib : libraries) {
+        if (!nvidiaGpu && lib.find("DLSS") != std::string::npos)
+            continue;
+        candidates.push_back(lib);
+    }
+    return candidates.size() == 1 ? candidates.front() : std::string{};
+}
+
 } // namespace framescope::core

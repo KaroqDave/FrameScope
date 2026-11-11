@@ -49,6 +49,10 @@ struct CorrelatorConfig {
     double shaderNearBeforeMs = 2000.0;
     double shaderNearAfterMs = 5000.0;
 
+    // The game's PID, when known: its threads counted as "other processes"
+    // until the trace learned which process is the game.
+    std::uint32_t gamePid = 0;
+
     // Turns a PID into a readable name for the evidence text.
     std::function<std::string(std::uint32_t)> processName;
 };

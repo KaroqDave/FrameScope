@@ -530,15 +530,20 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
 
     // ---- Background CPU load (other processes, averaged over the session)
     if (tl.bucketCoverageUs() > 1e6) {
-        const double cores = tl.backgroundUsTotal() / tl.bucketCoverageUs();
+        double backgroundUs = tl.backgroundUsTotal();
         std::uint32_t topPid = 0;
         double topUs = 0.0;
         for (const auto& [pid, us] : tl.topBackgroundTotals()) {
+            if (pid == cfg.gamePid && pid != 0) {
+                backgroundUs -= us; // the game itself, from before its PID was known
+                continue;
+            }
             if (us > topUs) {
                 topUs = us;
                 topPid = pid;
             }
         }
+        const double cores = std::max(0.0, backgroundUs) / tl.bucketCoverageUs();
         const auto detail = std::format("Other processes kept ~{:.1f} cores busy on average{}", cores,
                                         topPid != 0 ? std::format(", mostly {} (~{:.1f} cores)", nameOf(cfg, topPid),
                                                                   topUs / tl.bucketCoverageUs())

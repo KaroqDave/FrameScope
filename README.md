@@ -112,7 +112,7 @@ Every check exists for both vendors; only the source differs.
 | GPU throttling | Reported by the driver | Inferred from clock drops under full load |
 | Temperature near its limit | Within 3 °C of the driver's slowdown threshold | Hotspot ≥ 105 °C |
 | Shader compilation | Sampling of `nvgpucomp64.dll` | Sampling of `amdxc64.dll` |
-| Frame generation | DLSS-FG / MFG, found in the present pattern | AFMF and FSR-FG, labelled by PresentMon |
+| Frame generation | DLSS-FG / MFG, found in the present pattern | AFMF labelled by PresentMon; FSR-FG labelled or found in the present pattern |
 | V-Cache CCD check | n/a | Dual-CCD X3D CPUs (e.g. 9950X3D) |
 
 ## FrameScope's own footprint

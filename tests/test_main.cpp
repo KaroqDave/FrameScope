@@ -1593,6 +1593,60 @@ void advice()
     CHECK(html.find("What to do:</b> Update or reinstall the driver") != std::string::npos);
 }
 
+// Taken from a real capture (Control Resonant, RX 9070 XT, FSR Frame
+// Generation): gaps of ~19 ms and ~0.1 ms alternate, each frame is shown for
+// ~9.7 ms, and PresentMon reports the CPU/GPU work on the near-zero row.
+void fsrFrameGenerationRealPattern()
+{
+    std::vector<FrameRecord> in;
+    double t = 0.0;
+    for (int i = 0; i < 600; ++i) {
+        const bool rendered = i % 2 == 0;
+        auto f = rendered ? frame(19.2 + (i % 7) * 0.05, 0.0, 0.0) : frame(0.08 + (i % 5) * 0.01, 19.2, 3.8);
+        t += f.frameTimeMs / 1000.0;
+        f.timeSeconds = t;
+        f.displayTracked = true;
+        f.displayedMs = 9.7;
+        in.push_back(f);
+    }
+    FrameGenerationFilter filter;
+    const auto out = runFilter(in, filter);
+    CHECK(out.size() == 300 && filter.generatedPerFrame() == 1);
+    CHECK(out[50].generatedFrames == 1 && near(out[50].frameTimeMs, 19.3, 0.4));
+    // The group's work, not the zeros of the long row; capped at the group's time.
+    CHECK(out[50].cpuBusyMs && near(*out[50].cpuBusyMs, 19.2, 0.2));
+    CHECK(out[50].gpuBusyMs && near(*out[50].gpuBusyMs, 3.8));
+    CHECK(*out[50].cpuBusyMs <= out[50].frameTimeMs);
+
+    CaptureSession cs;
+    for (const auto& f : out)
+        cs.append(f);
+    CHECK(cs.spikes().empty()); // 6,900 false spikes in the original capture
+
+    CHECK(likelyFrameGenerationLibrary({"NVIDIA DLSS Frame Generation", "AMD FSR Frame Generation"}, false) ==
+          "AMD FSR Frame Generation");
+    CHECK(likelyFrameGenerationLibrary({"NVIDIA DLSS Frame Generation", "AMD FSR Frame Generation"}, true).empty());
+    CHECK(likelyFrameGenerationLibrary({"NVIDIA DLSS Frame Generation"}, true) == "NVIDIA DLSS Frame Generation");
+    CHECK(likelyFrameGenerationLibrary({}, true).empty());
+}
+
+void gameIsNotBackground()
+{
+    EventTimeline tl(kFreq);
+    std::vector<CpuBucket> bs;
+    for (int i = 0; i < 300; ++i)
+        bs.push_back(bucket(i * 10.0, 0, 0, 30000, i < 100 ? 42u : 777u, i < 100 ? 25000.f : 4000.f));
+    tl.appendCpuBuckets(bs);
+    CorrelatorConfig cfg;
+    cfg.gamePid = 42;
+    cfg.processName = [](std::uint32_t pid) { return pid == 42 ? std::string{"game.exe"} : std::string{"other.exe"}; };
+    const auto f = sessionFindings(tl, nullptr, cfg);
+    const auto it = std::ranges::find_if(f, [](const Finding& x) { return x.title.ends_with("background CPU load"); });
+    CHECK(it != f.end());
+    if (it != f.end())
+        CHECK(it->detail.find("game.exe") == std::string::npos && it->detail.find("other.exe") != std::string::npos);
+}
+
 } // namespace
 
 int main()
@@ -1652,6 +1706,8 @@ int main()
         {"parserFollowsNewSwapChain", parserFollowsNewSwapChain},
         {"frameGenerationPattern", frameGenerationPattern},
         {"advice", advice},
+        {"fsrFrameGenerationRealPattern", fsrFrameGenerationRealPattern},
+        {"gameIsNotBackground", gameIsNotBackground},
     };
 
     for (const auto& [name, fn] : tests) {

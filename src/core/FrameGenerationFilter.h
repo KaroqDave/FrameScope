@@ -58,6 +58,8 @@ private:
     double m_pendingMs = 0.0;
     double m_pendingDisplayedMs = 0.0;
     std::optional<std::int64_t> m_pendingQpcStart;
+    std::optional<double> m_pendingCpuBusyMs; // PresentMon puts the group's CPU/GPU work on
+    std::optional<double> m_pendingGpuBusyMs; // either row (seen with FSR-FG: on the near-zero one)
 
     int m_lastFactor = 0;
     std::size_t m_merged = 0;

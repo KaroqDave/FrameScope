@@ -112,6 +112,8 @@ private:
     bool m_affinityChecked = false;
     std::vector<std::string> m_frameGenLibraries;
     qint64 m_lastFindingsUpdate = 0;
+    qint64 m_lastSpikeTableRebuild = 0;
+    bool m_spikeTableStale = false;
     QAction* m_lightTraceAction = nullptr;
 
     mutable core::DisplayAnalysis m_displayCache;

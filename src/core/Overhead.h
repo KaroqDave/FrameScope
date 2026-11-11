@@ -32,4 +32,10 @@ std::vector<Finding> overheadFindings(const Overhead& overhead);
 std::vector<Finding> frameGenerationLibraryFindings(const std::vector<std::string>& libraries,
                                                     bool generatedFramesReported);
 
+// Which loaded frame generation library is the one in use, for naming a
+// pattern-detected frame generation. Games often load several. DLSS Frame
+// Generation only runs on NVIDIA cards; with one candidate left it is named,
+// otherwise the result is empty (not known).
+std::string likelyFrameGenerationLibrary(const std::vector<std::string>& libraries, bool nvidiaGpu);
+
 } // namespace framescope::core

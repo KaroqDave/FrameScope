@@ -67,10 +67,14 @@ problem.
 | Technique | How it is recognised |
 |---|---|
 | AMD AFMF, AMD FSR-FG, Intel XeSS-FG | PresentMon labels the generated frames (`--track_frame_type`, passed when the PresentMon version supports it) |
-| NVIDIA DLSS-FG / Multi Frame Generation, anything unlabelled | Present pattern: groups of one long gap and 1–5 gaps near zero (below 30% of the average gap and below 4 ms), at least 8 groups in a window of 96 presents, 80% of them the same size, and the near-zero frames must reach the screen |
+| NVIDIA DLSS-FG / Multi Frame Generation, AMD FSR-FG when the game doesn't report it, anything unlabelled | Present pattern: groups of one long gap and 1–5 gaps near zero (below 30% of the average gap and below 4 ms), at least 8 groups in a window of 96 presents, 80% of them the same size, and the near-zero frames must reach the screen |
 | Neither found | If the game has a frame generation library loaded, a finding says so |
 
-Generated frames are folded into the rendered frame they belong to. Spikes, average FPS and 1%
+The pattern was confirmed on a real FSR Frame Generation capture (gaps of ~19 ms and ~0.1 ms
+alternating, each frame shown for ~9.7 ms): 6,900 false spikes without the detector, 69 with it.
+
+Generated frames are folded into the rendered frame they belong to. PresentMon reports the
+group's CPU and GPU work on either row, so the merged frame takes the larger values. Spikes, average FPS and 1%
 lows always describe rendered frames.
 
 A **screen hitch** is the spike rule applied to how long each frame stayed on screen. Hitches

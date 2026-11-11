@@ -450,7 +450,14 @@ void MainWindow::pumpTrace(bool final)
     if (m_mode == Mode::Capture) {
         m_latency = m_trace.latencySnapshot();
         const double settleMs = final ? 0.0 : kSettleMs;
-        if (m_session.attributePending(m_timeline, settleMs, m_correlatorConfig) > 0) {
+        if (m_session.attributePending(m_timeline, settleMs, m_correlatorConfig) > 0)
+            m_spikeTableStale = true;
+        // Rebuilding thousands of rows every second would cost more than the trace itself.
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        const qint64 minGapMs = m_session.spikes().size() > 1000 ? 10'000 : 0;
+        if (m_spikeTableStale && (final || nowMs - m_lastSpikeTableRebuild >= minGapMs)) {
+            m_spikeTableStale = false;
+            m_lastSpikeTableRebuild = nowMs;
             rebuildSpikeTable();
             updateVerdict();
             m_view->update();
@@ -555,6 +562,7 @@ void MainWindow::onFrames(const std::vector<core::FrameRecord>& frames)
             m_application = frames.back().application;
         m_trace.setTargetProcess(m_gamePid);
         m_sampler.setTargetProcess(m_gamePid);
+        m_correlatorConfig.gamePid = m_gamePid;
         log(tr("Game process: %1 (PID %2)").arg(qs(m_application)).arg(m_gamePid));
     }
 
@@ -563,8 +571,11 @@ void MainWindow::onFrames(const std::vector<core::FrameRecord>& frames)
         auto name = m_capture.parser().frameGenerationName();
         if (name.empty()) {
             name = m_capture.frameGenerationFilter().description();
-            if (!name.empty() && !m_frameGenLibraries.empty())
-                name = m_frameGenLibraries.front() + " " + name;
+            if (!name.empty()) {
+                const bool nvidia = m_sampler.status().find("NVML (") != std::string::npos;
+                if (const auto lib = core::likelyFrameGenerationLibrary(m_frameGenLibraries, nvidia); !lib.empty())
+                    name = lib + " " + name;
+            }
         }
         if (!name.empty()) {
             m_session.setFrameGeneration(name);

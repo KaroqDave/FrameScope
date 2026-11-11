@@ -15,6 +15,13 @@ constexpr double kShownShare = 0.6;        // generated frames reach the screen;
 constexpr int kMaxGenerated = 5;           // DLSS Multi Frame Generation goes up to 6x
 constexpr std::size_t kAnalyseEvery = 8;
 
+std::optional<double> maxOf(const std::optional<double>& a, const std::optional<double>& b)
+{
+    if (!a)
+        return b;
+    return b ? std::max(*a, *b) : a;
+}
+
 } // namespace
 
 void FrameGenerationFilter::reset()
@@ -100,6 +107,8 @@ void FrameGenerationFilter::emitFront(std::vector<FrameRecord>& out, bool flushi
         ++m_pendingCount;
         m_pendingMs += f.frameTimeMs;
         m_pendingDisplayedMs += f.displayedMs.value_or(0.0);
+        m_pendingCpuBusyMs = maxOf(m_pendingCpuBusyMs, f.cpuBusyMs);
+        m_pendingGpuBusyMs = maxOf(m_pendingGpuBusyMs, f.gpuBusyMs);
         return;
     }
 
@@ -110,6 +119,15 @@ void FrameGenerationFilter::emitFront(std::vector<FrameRecord>& out, bool flushi
         f.generatedDisplayedMs += m_pendingDisplayedMs;
         if (m_pendingQpcStart && f.qpcStart)
             f.qpcStart = std::min(*f.qpcStart, *m_pendingQpcStart);
+        f.cpuBusyMs = maxOf(f.cpuBusyMs, m_pendingCpuBusyMs);
+        f.gpuBusyMs = maxOf(f.gpuBusyMs, m_pendingGpuBusyMs);
+        // Busy times were measured against a single row; never more than the group took.
+        if (f.cpuBusyMs)
+            f.cpuBusyMs = std::min(*f.cpuBusyMs, f.frameTimeMs);
+        if (f.gpuBusyMs)
+            f.gpuBusyMs = std::min(*f.gpuBusyMs, f.frameTimeMs);
+        m_pendingCpuBusyMs.reset();
+        m_pendingGpuBusyMs.reset();
         m_merged += m_pendingCount;
         m_lastFactor = m_pattern.active ? m_pattern.generated : m_lastFactor;
         m_pendingCount = 0;
