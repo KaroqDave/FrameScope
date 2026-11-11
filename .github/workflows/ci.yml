@@ -19,8 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The package mirror occasionally hangs; fail fast and retry instead of blocking the run.
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build
+        timeout-minutes: 12
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout 200 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
+               sudo timeout 200 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o DPkg::Lock::Timeout=60 \
+                 install -y --no-install-recommends qt6-base-dev ninja-build g++; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed, retrying"; sleep 10
+          done
+          exit 1
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
