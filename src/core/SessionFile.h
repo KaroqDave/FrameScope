@@ -33,6 +33,7 @@ struct SavedSession {
     std::vector<Finding> findings;
     std::vector<ModuleLatency> drivers;
     std::uint32_t gamePid = 0;
+    std::string frameGeneration; // "AMD AFMF", "AMD FSR-FG" ...; empty if none seen
     std::vector<ShaderWriteRecord> shaderWrites;
 };
 

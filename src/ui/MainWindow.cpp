@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "core/DisplayAnalysis.h"
 #include "core/PresentMonCsvParser.h"
 #include "core/Report.h"
 #include "core/SessionFile.h"
@@ -473,11 +474,17 @@ void MainWindow::onFrames(const std::vector<core::FrameRecord>& frames)
 {
     if (m_gamePid == 0 && !frames.empty() && frames.front().processId != 0) {
         m_gamePid = frames.front().processId;
+        m_displayCacheTime = 0;
         if (!frames.front().application.empty())
             m_application = frames.front().application;
         m_trace.setTargetProcess(m_gamePid);
         m_sampler.setTargetProcess(m_gamePid);
         log(tr("Game process: %1 (PID %2)").arg(qs(m_application)).arg(m_gamePid));
+    }
+
+    if (m_session.frameGeneration().empty() && !m_capture.parser().frameGenerationName().empty()) {
+        m_session.setFrameGeneration(m_capture.parser().frameGenerationName());
+        log(tr("Frame generation detected: %1").arg(qs(m_session.frameGeneration())));
     }
 
     // Sorting while inserting would move rows around; pause it.
@@ -574,11 +581,13 @@ void MainWindow::openCsv()
     rememberDir(path);
 
     try {
-        auto frames = core::loadPresentMonCsv(path.toStdWString());
+        std::string frameGeneration;
+        auto frames = core::loadPresentMonCsv(path.toStdWString(), &frameGeneration);
         resetForLoadedData();
         m_session.clear();
         for (auto& f : frames)
             m_session.append(std::move(f));
+        m_session.setFrameGeneration(frameGeneration);
         if (!m_session.frames().empty())
             m_application = m_session.frames().front().application;
         m_createdAt = QFileInfo(path).lastModified().toString(Qt::ISODate).toStdString();
@@ -614,6 +623,7 @@ void MainWindow::openSession()
         m_loadedFindings = std::move(s.findings);
         m_loadedDrivers = std::move(s.drivers);
         m_session.restore(std::move(s.frames), std::move(s.spikes));
+        m_session.setFrameGeneration(s.frameGeneration);
     } catch (const std::exception& e) {
         QMessageBox::warning(this, tr("Could not open session"), QString::fromUtf8(e.what()));
         return;
@@ -653,6 +663,7 @@ void MainWindow::saveSession()
     s.findings = currentFindings();
     s.drivers = currentDrivers();
     s.gamePid = m_gamePid;
+    s.frameGeneration = m_session.frameGeneration();
     s.shaderWrites = core::shaderWritesForSession(m_timeline, m_session.frames());
     try {
         core::saveSession(path.toStdWString(), s);
@@ -788,6 +799,11 @@ void MainWindow::saveDiagnostics()
     const auto& parser = m_capture.parser();
     o << "Command      " << (m_capture.commandLine().isEmpty() ? tr("(not started)") : m_capture.commandLine()) << "\n";
     o << "Header       " << qs(parser.headerLine().empty() ? std::string{"(none yet)"} : parser.headerLine()) << "\n";
+    o << "Version      " << (m_capture.info().recognised() ? qs(m_capture.info().version) : tr("(not read)"))
+      << (m_capture.info().trackFrameType ? ", supports --track_frame_type" : ", no --track_frame_type") << "\n";
+    o << "Display data " << (parser.hasDisplayTimes() ? "yes" : "no") << ", frame types "
+      << (parser.hasFrameType() ? "yes" : "no") << ", generated frame rows " << parser.generatedRows()
+      << (parser.frameGenerationName().empty() ? QString{} : QStringLiteral(" (%1)").arg(qs(parser.frameGenerationName()))) << "\n";
     o << "QPC times    " << (parser.hasQpcTimes() ? "yes" : "no (spikes can't be matched to system events)") << "\n";
     o << "Swap chain   " << qs(parser.lockedSwapChain()) << "\n";
     o << "Skipped rows " << parser.skippedRows() << "\n";
@@ -847,12 +863,23 @@ std::vector<core::Finding> MainWindow::currentFindings() const
     auto findings = m_loadedFindings ? *m_loadedFindings
                                      : core::sessionFindings(m_timeline, m_latency.empty() ? nullptr : &m_latency,
                                                              m_correlatorConfig);
-    core::linkFindingsToSpikes(findings, m_session.spikes());
-    // The stutter pattern is recomputed from the frames (also for older saved sessions).
-    std::erase_if(findings, [](const core::Finding& f) { return f.title.starts_with("Stutter "); });
-    const auto pattern = core::stutterPatternFindings(m_session.frames(), m_session.spikes());
-    findings.insert(findings.end(), pattern.begin(), pattern.end());
+    core::refreshFrameFindings(findings, m_session.frames(), m_session.spikes(), m_session.frameGeneration(),
+                               &displayAnalysis());
     return findings;
+}
+
+const core::DisplayAnalysis& MainWindow::displayAnalysis() const
+{
+    // Walks over every frame, so while capturing it's refreshed only every 10 s.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool stale = m_displayCacheFrames != m_session.frames().size() || m_displayCacheSpikes != m_session.spikes().size();
+    if (stale && (m_mode != Mode::Capture || now - m_displayCacheTime >= 10'000)) {
+        m_displayCache = core::analyzeDisplay(m_session.frames(), m_session.spikes());
+        m_displayCacheFrames = m_session.frames().size();
+        m_displayCacheSpikes = m_session.spikes().size();
+        m_displayCacheTime = now;
+    }
+    return m_displayCache;
 }
 
 std::vector<core::ModuleLatency> MainWindow::currentDrivers() const
@@ -998,15 +1025,18 @@ void MainWindow::refresh()
         m_statsLabel->setText(tr("No data"));
         return;
     }
-    m_statsLabel->setText(tr("%1 frames · %2 s · avg %3 fps · 1% low %4 fps · worst %5 ms · "
-                             "%6 spikes (%7/min)")
-                              .arg(s.frames)
-                              .arg(s.durationSeconds, 0, 'f', 1)
-                              .arg(s.averageFps, 0, 'f', 0)
-                              .arg(s.onePercentLowFps, 0, 'f', 0)
-                              .arg(s.worstFrameMs, 0, 'f', 1)
-                              .arg(s.spikes)
-                              .arg(s.spikesPerMinute, 0, 'f', 1));
+    auto text = tr("%1 frames · %2 s · avg %3 fps · 1% low %4 fps · worst %5 ms · "
+                   "%6 spikes (%7/min)")
+                    .arg(s.frames)
+                    .arg(s.durationSeconds, 0, 'f', 1)
+                    .arg(s.averageFps, 0, 'f', 0)
+                    .arg(s.onePercentLowFps, 0, 'f', 0)
+                    .arg(s.worstFrameMs, 0, 'f', 1)
+                    .arg(s.spikes)
+                    .arg(s.spikesPerMinute, 0, 'f', 1);
+    if (const auto& d = displayAnalysis(); d.available && d.generatedShare() >= 0.05)
+        text += tr(" · %1 fps on screen with frame generation").arg(d.displayedFps, 0, 'f', 0);
+    m_statsLabel->setText(text);
 }
 
 void MainWindow::log(const QString& message)

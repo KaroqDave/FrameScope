@@ -1,5 +1,7 @@
 #include "core/Report.h"
 
+#include "core/DisplayAnalysis.h"
+
 #include <algorithm>
 #include <cmath>
 #include <format>
@@ -218,7 +220,11 @@ std::string renderHtmlReport(const ReportData& d)
 
     // ---- Stats
     h += "<div class=\"stats\">";
-    h += stat("Average FPS", std::format("{:.0f}", stats.averageFps));
+    const auto display = analyzeDisplay(d.frames, d.spikes);
+    const bool frameGen = display.available && display.generatedShare() >= 0.05;
+    h += stat(frameGen ? "Average FPS (rendered)" : "Average FPS", std::format("{:.0f}", stats.averageFps));
+    if (frameGen)
+        h += stat("FPS on screen (frame generation)", std::format("{:.0f}", display.displayedFps));
     h += stat("1% low FPS", std::format("{:.0f}", stats.onePercentLowFps));
     h += stat("Worst frame", std::format("{:.0f} ms", stats.worstFrameMs));
     h += stat("Spikes", std::format("{}", stats.spikes));

@@ -5,6 +5,7 @@
 
 #include "core/CaptureSession.h"
 #include "core/Comparison.h"
+#include "core/DisplayAnalysis.h"
 #include "core/PresentMonCsvParser.h"
 #include "core/Report.h"
 #include "core/SessionFile.h"
@@ -43,9 +44,12 @@ Loaded load(const std::filesystem::path& path)
     if (isSessionFile(path)) {
         l.meta = loadSession(path);
         l.session.restore(l.meta.frames, l.meta.spikes);
+        l.session.setFrameGeneration(l.meta.frameGeneration);
     } else {
-        for (auto& f : loadPresentMonCsv(path))
+        std::string frameGeneration;
+        for (auto& f : loadPresentMonCsv(path, &frameGeneration))
             l.session.append(std::move(f));
+        l.session.setFrameGeneration(frameGeneration);
         if (!l.session.frames().empty())
             l.meta.application = l.session.frames().front().application;
     }
@@ -111,10 +115,13 @@ int main(int argc, char** argv)
 
         // Findings: saved ones (from .fscope) plus the stutter pattern from the frames.
         auto findings = run.meta.findings;
-        linkFindingsToSpikes(findings, run.session.spikes());
-        std::erase_if(findings, [](const Finding& f) { return f.title.starts_with("Stutter "); });
-        for (auto& f : stutterPatternFindings(run.session.frames(), run.session.spikes()))
-            findings.push_back(std::move(f));
+        const auto display = analyzeDisplay(run.session.frames(), run.session.spikes());
+        refreshFrameFindings(findings, run.session.frames(), run.session.spikes(), run.session.frameGeneration(), &display);
+        if (display.available) {
+            out(stdout, "On screen     {:>10.1f} fps  ({:.0f}% generated, {:.0f}% of rendered frames not shown, {} hitches)",
+                display.displayedFps, display.generatedShare() * 100.0, display.droppedShare() * 100.0,
+                display.screenHitches);
+        }
         if (!findings.empty()) {
             out(stdout, "\nFindings:");
             for (const auto& f : findings)

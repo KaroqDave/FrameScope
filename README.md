@@ -211,6 +211,27 @@ framescope-cli session.fscope --report report.html
 framescope-cli run1.fscope --compare run2.fscope
 ```
 
+## Frame generation and what reaches the screen
+
+FrameScope judges stutter on the frames the **game renders**. On top of that it looks at what
+was actually **shown**:
+
+| Finding | Meaning |
+|---|---|
+| Frame generation is active | Share of generated frames (AMD AFMF, AMD FSR-FG, Intel XeSS-FG), FPS on screen vs. FPS rendered |
+| Rendered frames that never reached the screen | The game renders faster than the display refreshes |
+| Uneven frame pacing on screen | Hitches on screen that the game's frame times don't show: the frames were rendered evenly but shown unevenly (frame generation, V-Sync/VRR, frame limiter) |
+| Frame pacing on screen matches the game | How many of the spikes were visible on screen |
+
+A screen hitch uses the same rule as a spike, applied to how long each frame stayed on screen.
+
+Generated frames are only reported when PresentMon knows about them: FrameScope passes
+`--track_frame_type` if the PresentMon version supports it (it reads `PresentMon --help` once,
+because PresentMon refuses to start on unknown options), and the driver or game SDK has to
+report its generated frames to PresentMon. Without that, generated frames look like ordinary
+frames. Generated frames never count as frames of the game: average FPS, 1% lows and spikes
+always refer to rendered frames.
+
 ## Files it writes
 
 FrameScope is portable. Its only file of its own is **`framescope.ini` next to the exe**
@@ -240,10 +261,11 @@ counters at the end.
   Image, CSwitch). If `framescope-latency` shows only `unknown` drivers, no events or no CPU
   buckets, that's the place to look (`src/etw/KernelTrace.cpp`).
 
-- PresentMon flags used: `--process_name`, `--output_stdout`, `--session_name`,
-  `--stop_existing_session`, `--terminate_existing_session` (in
-  `src/capture/PresentMonCapture.cpp`). Check them against `PresentMon --help` if you use a
-  different version.
+- PresentMon flags used: `--process_name`, `--output_stdout`, `--qpc_time`, `--session_name`,
+  `--stop_existing_session`, `--terminate_existing_session`, plus `--track_frame_type` when
+  the version lists it in `--help` (in `src/capture/PresentMonCapture.cpp`).
+- The CSV parser reads the columns of all PresentMon versions (2.0–2.3.0, the current default
+  and `--v1_metrics`), matching names without regard to case.
 - The parser locks onto the **first swap chain** it sees in the process. Launchers or overlays
   that present first could get picked by mistake; a smarter pick is planned.
 - Generated frames (`FrameType` other than `Application`) are ignored.

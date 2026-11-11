@@ -5,9 +5,11 @@
 #include "core/Report.h"
 #include "core/SessionFile.h"
 #include "core/Correlator.h"
+#include "core/DisplayAnalysis.h"
 #include "core/EventTimeline.h"
 #include "core/LatencyStats.h"
 #include "core/PresentMonCsvParser.h"
+#include "core/PresentMonInfo.h"
 #include "core/SessionStats.h"
 #include "core/SpikeDetector.h"
 
@@ -15,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <string>
@@ -77,13 +80,14 @@ void parserV2()
         CHECK(near(b->timeSeconds, 0.0365));
     }
 
-    // Generated frames and other swap chains are skipped.
-    CHECK(!p.feedLine("cod.exe,1234,0x1A,DXGI,AMD_AFMF,1.2,8.0,1,1,1,1,1"));
+    // Generated frames don't become frames of their own; other swap chains are skipped.
+    CHECK(!p.feedLine("cod.exe,1234,0x1A,DXGI,AMD AFMF,1.2,8.0,1,1,1,1,1"));
+    CHECK(p.generatedRows() == 1 && p.frameGenerationName() == "AMD AFMF");
     CHECK(!p.feedLine("cod.exe,1234,0x2B,DXGI,Application,1.2,8.0,1,1,1,1,1"));
     // Truncated / garbage rows are skipped.
     CHECK(!p.feedLine("cod.exe,1234"));
     CHECK(!p.feedLine("cod.exe,1234,0x1A,DXGI,Application,1.3,NA,1,1,1,1,1"));
-    CHECK(p.skippedRows() == 4);
+    CHECK(p.skippedRows() == 3);
     CHECK(p.lockedSwapChain() == "1234:0x1A");
 }
 
@@ -1176,6 +1180,173 @@ void findingsLinkedToSpikes()
     CHECK(g[0].level == Finding::Level::Problem && !g[0].spikes);
 }
 
+// ---------------------------------------------------------------------------
+// Frame generation and what reaches the screen
+// ---------------------------------------------------------------------------
+void parserDisplayAndFrameTypes()
+{
+    {   // Current default format with --track_frame_type and --qpc_time
+        PresentMonCsvParser p;
+        p.feedLine("Application,ProcessID,SwapChainAddress,PresentRuntime,SyncInterval,PresentFlags,AllowsTearing,"
+                   "PresentMode,FrameType,TimeInQPC,MsBetweenSimulationStart,MsBetweenPresents,MsBetweenDisplayChange,"
+                   "MsInPresentAPI,MsRenderPresentLatency,MsUntilDisplayed,CPUStartQPC,MsBetweenAppStart,MsCPUBusy,"
+                   "MsCPUWait,MsGPULatency,MsGPUTime,MsGPUBusy,MsGPUWait");
+        CHECK(p.hasDisplayTimes() && p.hasFrameType() && p.hasQpcTimes());
+        const auto row = [](std::string_view type, std::string_view between, std::string_view shown) {
+            return std::format("hd2.exe,7,0x1,DXGI,0,0,1,Hardware: Independent Flip,{},1000,NA,{},{},0.1,1,5,123456789012,"
+                               "10,6,4,1,8,7,1", type, between, shown);
+        };
+        auto a = p.feedLine(row("Application", "10.0", "5.0"));
+        CHECK(a && a->displayTracked && a->displayedMs && near(*a->displayedMs, 5.0) && a->generatedFrames == 0);
+        CHECK(a && near(a->frameTimeMs, 10.0) && near(*a->cpuBusyMs, 6.0) && near(*a->gpuBusyMs, 7.0));
+        CHECK(!p.feedLine(row("AMD FSR-FG", "10.0", "5.0")));       // generated: waits for its application frame
+        auto b = p.feedLine(row("Application", "10.0", "5.0"));
+        CHECK(b && b->generatedFrames == 1 && near(b->generatedDisplayedMs, 5.0));
+        auto c = p.feedLine(row("Application", "10.0", "NA"));      // never shown
+        CHECK(c && c->dropped() && c->generatedFrames == 0);
+        CHECK(p.frameGenerationName() == "AMD FSR-FG" && p.generatedRows() == 1);
+    }
+    {   // --v1_metrics of current PresentMon: lower-case "ms" names, Dropped column
+        PresentMonCsvParser p;
+        p.feedLine("Application,ProcessID,SwapChainAddress,Runtime,SyncInterval,PresentFlags,Dropped,TimeInSeconds,"
+                   "msInPresentAPI,msBetweenPresents,AllowsTearing,PresentMode,msUntilRenderComplete,msUntilDisplayed,"
+                   "msBetweenDisplayChange,msFlipDelay,msUntilRenderStart,msGPUActive,QPCTime");
+        CHECK(p.hasHeader() && p.hasDisplayTimes() && p.hasQpcTimes());
+        auto f = p.feedLine("g.exe,7,0x1,DXGI,0,0,0,1.5,0.1,8.0,1,Hardware: Independent Flip,5,6,8.1,0,1,6.5,500000000");
+        CHECK(f && near(f->frameTimeMs, 8.0) && near(*f->gpuBusyMs, 6.5) && near(*f->displayedMs, 8.1));
+        CHECK(f && f->qpcEnd && *f->qpcEnd == 500000000);
+        auto d = p.feedLine("g.exe,7,0x1,DXGI,0,0,1,1.6,0.1,8.0,1,Hardware: Independent Flip,5,0,0,0,1,6.5,500080000");
+        CHECK(d && d->dropped());
+    }
+    {   // No display columns: nothing is tracked, nothing counts as dropped
+        PresentMonCsvParser p;
+        p.feedLine("Application,ProcessID,SwapChainAddress,FrameTime,CPUBusy,GPUBusy");
+        auto f = p.feedLine("x.exe,1,0x1,10,5,9");
+        CHECK(f && !f->displayTracked && !f->dropped());
+    }
+}
+
+// 60 s at 100 fps rendered; `gen` generated frames per rendered frame.
+std::pair<std::vector<FrameRecord>, std::vector<Spike>> displayRun(unsigned gen, const std::vector<int>& longShown,
+                                                                   const std::vector<int>& spikesAt = {})
+{
+    CaptureSession cs;
+    for (int i = 0; i < 6000; ++i) {
+        const bool spike = std::ranges::find(spikesAt, i) != spikesAt.end();
+        auto f = frame(spike ? 60.0 : 10.0, 6.0, 7.0);
+        f.timeSeconds = (cs.frames().empty() ? 0.0 : cs.frames().back().timeSeconds) + f.frameTimeMs / 1000.0;
+        f.displayTracked = true;
+        const double each = f.frameTimeMs / (gen + 1);
+        f.displayedMs = std::ranges::find(longShown, i) != longShown.end() ? 40.0 : each;
+        f.generatedFrames = static_cast<std::uint16_t>(gen);
+        f.generatedDisplayedMs = each * gen;
+        cs.append(f);
+    }
+    return {cs.frames(), cs.spikes()};
+}
+
+void displayAnalysis()
+{
+    {   // Frame generation 2x, smooth
+        auto [frames, spikes] = displayRun(1, {});
+        const auto a = analyzeDisplay(frames, spikes);
+        CHECK(a.available && a.generatedFrames == 6000 && a.displayedFrames == 12000);
+        CHECK(near(a.generatedShare(), 0.5) && near(a.renderedFps, 100.0, 0.5) && near(a.displayedFps, 200.0, 1.0));
+        CHECK(a.screenHitches == 0 && a.droppedFrames == 0);
+        const auto f = displayFindings(a, "AMD AFMF");
+        CHECK(f.size() == 1 && f[0].title == "Frame generation is active");
+        if (!f.empty())
+            CHECK(f[0].detail.starts_with("50% of the frames on screen are generated (AMD AFMF): 200 fps shown, 100 fps rendered"));
+    }
+    {   // Spikes in the game show up on screen
+        auto [frames, spikes] = displayRun(0, {}, {1000, 3000, 5000});
+        const auto a = analyzeDisplay(frames, spikes);
+        CHECK(a.spikes == 3 && a.screenHitches == 3 && a.spikesSeenOnScreen == 3 && a.screenHitchesWithoutSpike == 0);
+        const auto f = displayFindings(a);
+        CHECK(f.size() == 1 && f[0].title == "Frame pacing on screen matches the game");
+    }
+    {   // Game renders evenly, but 8 frames stay on screen far too long
+        auto [frames, spikes] = displayRun(1, {500, 1200, 1900, 2600, 3300, 4000, 4700, 5400});
+        const auto a = analyzeDisplay(frames, spikes);
+        CHECK(a.spikes == 0 && a.screenHitches == 8 && a.screenHitchesWithoutSpike == 8);
+        const auto f = displayFindings(a);
+        CHECK(std::ranges::any_of(f, [](const Finding& x) {
+            return x.title == "Uneven frame pacing on screen" && x.level == Finding::Level::Warning;
+        }));
+    }
+    {   // Dropped frames
+        auto [frames, spikes] = displayRun(0, {});
+        for (std::size_t i = 0; i < frames.size(); i += 4)
+            frames[i].displayedMs.reset();
+        const auto a = analyzeDisplay(frames, spikes);
+        CHECK(a.droppedFrames == 1500 && near(a.droppedShare(), 0.25));
+        CHECK(std::ranges::any_of(displayFindings(a), [](const Finding& x) {
+            return x.title == "Rendered frames that never reached the screen";
+        }));
+    }
+    {   // No display data: nothing to say
+        auto [frames, spikes] = makeRun(10, {2, 5});
+        const auto a = analyzeDisplay(frames, spikes);
+        CHECK(!a.available && displayFindings(a).empty());
+    }
+}
+
+void sessionFileDisplayColumns()
+{
+    auto [frames, spikes] = displayRun(1, {});
+    frames.resize(50);
+    frames[10].displayedMs.reset();
+    frames[11].generatedFrames = 0;
+    SavedSession s;
+    s.frames = frames;
+    s.frameGeneration = "AMD AFMF";
+    const auto path = std::filesystem::temp_directory_path() / "framescope_display.fscope";
+    saveSession(path, s);
+    const auto r = loadSession(path);
+    std::filesystem::remove(path);
+    CHECK(r.frameGeneration == "AMD AFMF" && r.frames.size() == 50);
+    CHECK(r.frames[0].displayTracked && near(*r.frames[0].displayedMs, 5.0) && r.frames[0].generatedFrames == 1);
+    CHECK(near(r.frames[0].generatedDisplayedMs, 5.0));
+    CHECK(r.frames[10].dropped() && r.frames[10].generatedFrames == 1);
+    CHECK(r.frames[11].displayedMs && r.frames[11].generatedFrames == 0);
+
+    // Sessions without display data stay as they were (and old files still load).
+    auto [f2, s2] = makeRun(1, {});
+    SavedSession plain;
+    plain.frames = f2;
+    saveSession(path, plain);
+    const auto r2 = loadSession(path);
+    std::filesystem::remove(path);
+    CHECK(!r2.frames[0].displayTracked && r2.frameGeneration.empty());
+}
+
+void presentMonHelp()
+{
+    const auto a = parsePresentMonHelp("PresentMon 2.3.1\n\nCapture Target Options:\n  --process_name name  Only record ...\n"
+                                       "Beta Options:\n  --track_frame_type   Track the type of each displayed frame;\n");
+    CHECK(a.recognised() && a.version == "2.3.1" && a.trackFrameType);
+    const auto b = parsePresentMonHelp("PresentMon 1.9.2\r\n  -process_name name\r\n");
+    CHECK(b.version == "1.9.2" && !b.trackFrameType);
+    const auto c = parsePresentMonHelp("'x' is not recognized as an internal or external command");
+    CHECK(!c.recognised() && !c.trackFrameType);
+    CHECK(!parsePresentMonHelp("").recognised());
+}
+
+void refreshFindingsFromSavedSession()
+{
+    // Findings as stored in a session file, incl. ones derived from the frames.
+    std::vector<Finding> f{
+        {Finding::Level::Good, "Enough free RAM", "45 GB free"},
+        {Finding::Level::Info, "Frame generation is active", "old text"},
+        {Finding::Level::Info, "Stutter comes in bursts", "old text"},
+    };
+    auto [frames, spikes] = displayRun(1, {});
+    refreshFrameFindings(f, frames, spikes, "AMD AFMF");
+    CHECK(std::ranges::count_if(f, [](const Finding& x) { return x.title == "Frame generation is active"; }) == 1);
+    CHECK(std::ranges::none_of(f, [](const Finding& x) { return x.detail == "old text"; }));
+    CHECK(std::ranges::any_of(f, [](const Finding& x) { return x.title == "Enough free RAM"; }));
+}
+
 } // namespace
 
 int main()
@@ -1224,6 +1395,11 @@ int main()
         {"backgroundExcludesGame", backgroundExcludesGame},
         {"compilerSampling", compilerSampling},
         {"findingsLinkedToSpikes", findingsLinkedToSpikes},
+        {"parserDisplayAndFrameTypes", parserDisplayAndFrameTypes},
+        {"displayAnalysis", displayAnalysis},
+        {"sessionFileDisplayColumns", sessionFileDisplayColumns},
+        {"presentMonHelp", presentMonHelp},
+        {"refreshFindingsFromSavedSession", refreshFindingsFromSavedSession},
     };
 
     for (const auto& [name, fn] : tests) {

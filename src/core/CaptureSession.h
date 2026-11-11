@@ -7,6 +7,7 @@
 #include "core/SpikeDetector.h"
 
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace framescope::core {
@@ -27,6 +28,10 @@ public:
     [[nodiscard]] const std::vector<Spike>& spikes() const noexcept { return m_spikes; }
     [[nodiscard]] SessionStats stats() const;
 
+    // Frame generation seen in the capture ("AMD AFMF" ...), empty if none.
+    void setFrameGeneration(std::string name) { m_frameGeneration = std::move(name); }
+    [[nodiscard]] const std::string& frameGeneration() const noexcept { return m_frameGeneration; }
+
     // Attribute spikes whose frame the trace has fully covered, waiting
     // settleMs for late ETW buffers. Does nothing while no trace has started.
     // Returns how many spikes got a new attribution.
@@ -39,6 +44,7 @@ private:
     SpikeDetector m_detector;
     std::vector<FrameRecord> m_frames;
     std::vector<Spike> m_spikes;
+    std::string m_frameGeneration;
 };
 
 } // namespace framescope::core

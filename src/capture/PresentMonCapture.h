@@ -2,6 +2,7 @@
 
 #include "core/FrameRecord.h"
 #include "core/PresentMonCsvParser.h"
+#include "core/PresentMonInfo.h"
 
 #include <QByteArray>
 #include <QObject>
@@ -40,6 +41,8 @@ public:
     [[nodiscard]] bool isRunning() const;
     [[nodiscard]] const core::PresentMonCsvParser& parser() const noexcept { return m_parser; }
     [[nodiscard]] const QString& commandLine() const noexcept { return m_commandLine; }
+    // Version and optional features of the PresentMon used for the last start.
+    [[nodiscard]] const core::PresentMonInfo& info() const noexcept { return m_info; }
 
 signals:
     // Batched per stdout read to keep UI overhead low at high frame rates.
@@ -56,6 +59,10 @@ private:
     QProcess m_process;
     QString m_presentMonPath;
     QString m_commandLine;
+    core::PresentMonInfo m_info;
+    QString m_infoPath; // m_info belongs to this executable
+
+    void probe(const QString& presentMonPath);
     core::PresentMonCsvParser m_parser;
     QByteArray m_lineBuffer;
 };

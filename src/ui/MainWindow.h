@@ -4,6 +4,7 @@
 #include "core/CaptureSession.h"
 #include "core/Comparison.h"
 #include "core/Correlator.h"
+#include "core/DisplayAnalysis.h"
 #include "core/EventTimeline.h"
 #include "core/LatencyStats.h"
 #include "etw/KernelTrace.h"
@@ -71,6 +72,7 @@ private:
     void updateFindings();
     [[nodiscard]] std::vector<core::Finding> currentFindings() const;
     [[nodiscard]] std::vector<core::ModuleLatency> currentDrivers() const;
+    [[nodiscard]] const core::DisplayAnalysis& displayAnalysis() const;
     void logLatencySummary();
     void log(const QString& message);
     void setBusy(bool busy);
@@ -92,6 +94,11 @@ private:
     std::vector<core::ModuleLatency> m_loadedDrivers;
     std::vector<core::Finding> m_baselineFindings;
     std::optional<core::RunComparison> m_comparison;
+
+    mutable core::DisplayAnalysis m_displayCache;
+    mutable std::size_t m_displayCacheFrames = 0;
+    mutable std::size_t m_displayCacheSpikes = 0;
+    mutable qint64 m_displayCacheTime = 0;
 
     std::uint32_t m_gamePid = 0;
     bool m_warnedNoDpc = false;

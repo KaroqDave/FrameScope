@@ -80,10 +80,22 @@ void saveSession(const std::filesystem::path& path, const SavedSession& s)
     out << "created\t" << clean(s.createdAt) << '\n';
     out << "sensors\t" << clean(s.sensors) << '\n';
     out << "gamepid\t" << s.gamePid << '\n';
+    if (!s.frameGeneration.empty())
+        out << "framegen\t" << clean(s.frameGeneration) << '\n';
 
     out << "[frames]\n";
     for (const auto& f : s.frames)
-        out << std::format("{}\t{}\t{}\t{}\n", f.timeSeconds, f.frameTimeMs, optStr(f.cpuBusyMs), optStr(f.gpuBusyMs));
+    {
+        out << std::format("{}\t{}\t{}\t{}", f.timeSeconds, f.frameTimeMs, optStr(f.cpuBusyMs), optStr(f.gpuBusyMs));
+        // Display columns only when tracked: time on screen ("x" = never shown),
+        // generated frames shown with it, their total time on screen.
+        if (f.displayTracked) {
+            out << '\t' << (f.displayedMs ? std::format("{}", *f.displayedMs) : std::string{"x"});
+            if (f.generatedFrames > 0)
+                out << std::format("\t{}\t{}", f.generatedFrames, f.generatedDisplayedMs);
+        }
+        out << '\n';
+    }
 
     out << "[spikes]\n";
     for (const auto& sp : s.spikes) {
@@ -174,6 +186,8 @@ SavedSession loadSession(const std::filesystem::path& path)
                 s.sensors = value;
             else if (f[0] == "gamepid")
                 s.gamePid = static_cast<std::uint32_t>(num(value));
+            else if (f[0] == "framegen")
+                s.frameGeneration = value;
         } else if (section == "[frames]") {
             const auto f = splitTabs(line);
             if (f.size() < 4)
@@ -183,6 +197,15 @@ SavedSession loadSession(const std::filesystem::path& path)
             r.frameTimeMs = num(f[1]);
             r.cpuBusyMs = optNum(f[2]);
             r.gpuBusyMs = optNum(f[3]);
+            if (f.size() > 4 && !f[4].empty()) {
+                r.displayTracked = true;
+                if (f[4] != "x")
+                    r.displayedMs = num(f[4]);
+                if (f.size() > 6) {
+                    r.generatedFrames = static_cast<std::uint16_t>(num(f[5]));
+                    r.generatedDisplayedMs = num(f[6]);
+                }
+            }
             r.application = s.application;
             s.frames.push_back(std::move(r));
         } else if (section == "[spikes]") {

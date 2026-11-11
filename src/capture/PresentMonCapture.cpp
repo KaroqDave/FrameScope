@@ -10,6 +10,8 @@ constexpr auto qpcTime = "--qpc_time";                     // raw QPC times -> m
 constexpr auto sessionName = "--session_name";
 constexpr auto stopExisting = "--stop_existing_session";      // take over a stale session
 constexpr auto terminateExisting = "--terminate_existing_session"; // stop a session, then exit
+constexpr auto trackFrameType = "--track_frame_type";      // beta option: generated frames (AFMF, FSR-FG, XeSS-FG)
+constexpr auto help = "--help";
 } // namespace flags
 
 PresentMonCapture::PresentMonCapture(QObject* parent)
@@ -52,6 +54,8 @@ void PresentMonCapture::start(const Options& options)
     m_lineBuffer.clear();
     m_presentMonPath = options.presentMonPath;
 
+    probe(options.presentMonPath);
+
     QStringList args{
         flags::processName, options.processName,
         flags::outputStdout,
@@ -59,11 +63,40 @@ void PresentMonCapture::start(const Options& options)
         flags::sessionName, kSessionName,
         flags::stopExisting,
     };
+    // PresentMon refuses to start on options it doesn't know, so optional
+    // ones are only passed when its help text lists them.
+    if (m_info.trackFrameType)
+        args << flags::trackFrameType;
     args += options.extraArgs;
+
+    emit logMessage(m_info.recognised()
+                        ? tr("PresentMon %1%2").arg(QString::fromStdString(m_info.version),
+                                                    m_info.trackFrameType ? tr(", frame generation tracking on")
+                                                                          : tr(", no frame generation tracking in this version"))
+                        : tr("Could not read PresentMon's version; using basic options only."));
 
     m_commandLine = QStringLiteral("%1 %2").arg(options.presentMonPath, args.join(' '));
     emit logMessage(m_commandLine);
     m_process.start(options.presentMonPath, args);
+}
+
+void PresentMonCapture::probe(const QString& presentMonPath)
+{
+    if (presentMonPath == m_infoPath)
+        return;
+    m_infoPath = presentMonPath;
+    m_info = {};
+
+    // `--help` prints the version and all options (to stderr), then exits.
+    QProcess help;
+    help.setProcessChannelMode(QProcess::MergedChannels);
+    help.start(presentMonPath, {flags::help});
+    if (!help.waitForFinished(5000)) {
+        help.kill();
+        help.waitForFinished(1000);
+        return;
+    }
+    m_info = core::parsePresentMonHelp(help.readAll().toStdString());
 }
 
 void PresentMonCapture::stop()

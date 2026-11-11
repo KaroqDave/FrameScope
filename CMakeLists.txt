@@ -60,6 +60,10 @@ add_library(framescope_core STATIC
     src/core/Comparison.cpp
     src/core/Report.h
     src/core/Report.cpp
+    src/core/DisplayAnalysis.h
+    src/core/DisplayAnalysis.cpp
+    src/core/PresentMonInfo.h
+    src/core/PresentMonInfo.cpp
 )
 target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

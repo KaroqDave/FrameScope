@@ -21,6 +21,7 @@ void CaptureSession::clear()
     m_detector.reset();
     m_frames.clear();
     m_spikes.clear();
+    m_frameGeneration.clear();
 }
 
 std::size_t CaptureSession::attributePending(const EventTimeline& timeline, double settleMs,

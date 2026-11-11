@@ -1,6 +1,7 @@
 #include "core/PresentMonCsvParser.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <fstream>
 #include <initializer_list>
@@ -59,11 +60,20 @@ std::optional<std::int64_t> toInt64(std::string_view s)
     return value;
 }
 
+bool equalsIgnoreCase(std::string_view a, std::string_view b)
+{
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+        return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+    });
+}
+
+// Column names changed case between PresentMon versions (MsBetweenPresents vs
+// msBetweenPresents), so match without regard to case.
 int findColumn(const std::vector<std::string_view>& cols,
                std::initializer_list<std::string_view> names)
 {
     for (const auto name : names) {
-        const auto it = std::ranges::find(cols, name);
+        const auto it = std::ranges::find_if(cols, [name](std::string_view c) { return equalsIgnoreCase(c, name); });
         if (it != cols.end())
             return static_cast<int>(it - cols.begin());
     }
@@ -100,6 +110,8 @@ bool PresentMonCsvParser::parseHeader(std::string_view line)
     m_appCol = findColumn(cols, {"Application"});
     m_swapChainCol = findColumn(cols, {"SwapChainAddress"});
     m_frameTypeCol = findColumn(cols, {"FrameType"});
+    m_displayedCol = findColumn(cols, {"DisplayedTime", "MsBetweenDisplayChange"});
+    m_droppedCol = findColumn(cols, {"Dropped"});
 
     // QPC time column (PresentMon --qpc_time). Names differ between versions.
     m_qpcCol = -1;
@@ -138,13 +150,6 @@ std::optional<FrameRecord> PresentMonCsvParser::feedLine(std::string_view line)
         return std::nullopt;
     }
 
-    // With frame generation, PresentMon also lists generated frames.
-    // Only real application frames say something about stutter.
-    if (const auto type = column(cols, m_frameTypeCol); !type.empty() && type != "Application") {
-        ++m_skippedRows;
-        return std::nullopt;
-    }
-
     std::string key{column(cols, m_pidCol)};
     key += ':';
     key += column(cols, m_swapChainCol);
@@ -152,6 +157,22 @@ std::optional<FrameRecord> PresentMonCsvParser::feedLine(std::string_view line)
         m_lockedKey = key;
     else if (key != m_lockedKey) {
         ++m_skippedRows;
+        return std::nullopt;
+    }
+
+    // With frame generation (and --track_frame_type), generated frames come as
+    // rows of their own. Only application frames say something about how the
+    // game runs; generated ones are counted on the next application frame.
+    const auto displayed = toDouble(column(cols, m_displayedCol));
+    if (const auto type = column(cols, m_frameTypeCol);
+        !type.empty() && type != "Application" && type != "NA" && type != "Unknown") {
+        ++m_generatedRows;
+        if (m_frameGenName.empty())
+            m_frameGenName = std::string{type};
+        if (displayed && *displayed > 0.0 && m_pendingGenerated < 1000) {
+            ++m_pendingGenerated;
+            m_pendingGeneratedMs += *displayed;
+        }
         return std::nullopt;
     }
 
@@ -168,6 +189,16 @@ std::optional<FrameRecord> PresentMonCsvParser::feedLine(std::string_view line)
     rec.frameTimeMs = *frameTime;
     rec.cpuBusyMs = toDouble(column(cols, m_cpuBusyCol));
     rec.gpuBusyMs = toDouble(column(cols, m_gpuBusyCol));
+    if (m_displayedCol >= 0) {
+        rec.displayTracked = true;
+        const bool droppedFlag = column(cols, m_droppedCol) == "1";
+        if (displayed && *displayed > 0.0 && !droppedFlag)
+            rec.displayedMs = *displayed;
+        rec.generatedFrames = m_pendingGenerated;
+        rec.generatedDisplayedMs = m_pendingGeneratedMs;
+    }
+    m_pendingGenerated = 0;
+    m_pendingGeneratedMs = 0.0;
     if (const auto qpc = toInt64(column(cols, m_qpcCol))) {
         // Seconds-since-start fit easily below 1e7; raw QPC ticks never do.
         if (!m_qpcHeuristic || *qpc > 10'000'000) {
@@ -182,7 +213,7 @@ std::optional<FrameRecord> PresentMonCsvParser::feedLine(std::string_view line)
     return rec;
 }
 
-std::vector<FrameRecord> loadPresentMonCsv(const std::filesystem::path& path)
+std::vector<FrameRecord> loadPresentMonCsv(const std::filesystem::path& path, std::string* frameGenerationName)
 {
     std::ifstream in(path);
     if (!in)
@@ -198,6 +229,8 @@ std::vector<FrameRecord> loadPresentMonCsv(const std::filesystem::path& path)
 
     if (!parser.hasHeader())
         throw std::runtime_error("No PresentMon header found in " + path.string());
+    if (frameGenerationName)
+        *frameGenerationName = parser.frameGenerationName();
     return frames;
 }
 
