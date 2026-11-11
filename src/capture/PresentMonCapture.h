@@ -39,6 +39,7 @@ public:
     void start(const Options& options);
     void stop();
     [[nodiscard]] bool isRunning() const;
+    [[nodiscard]] std::uint32_t processId() const { return static_cast<std::uint32_t>(m_process.processId()); }
     [[nodiscard]] const core::PresentMonCsvParser& parser() const noexcept { return m_parser; }
     [[nodiscard]] const QString& commandLine() const noexcept { return m_commandLine; }
     // Version and optional features of the PresentMon used for the last start.

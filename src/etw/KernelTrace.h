@@ -101,6 +101,21 @@ public:
     // The game's PID, so its threads can be told apart. Set it once known.
     void setTargetProcess(std::uint32_t pid) noexcept;
 
+    // FrameScope's own PID and PresentMon's: left out of the background load
+    // (their cost is measured separately).
+    void setOwnProcesses(std::uint32_t first, std::uint32_t second) noexcept;
+
+    // Frame generation libraries the game has loaded ("NVIDIA DLSS Frame Generation" ...).
+    [[nodiscard]] std::vector<std::string> frameGenerationLibraries() const;
+
+    // Stops trace sessions a crashed FrameScope left running: its own kernel
+    // session and PresentMon's session of the given name. Safe to call any time.
+    static void stopStaleSessions(const wchar_t* presentMonSession) noexcept;
+
+    // If FrameScope crashes, stop the trace sessions on the way out instead
+    // of leaving them running until the next start.
+    static void installCrashCleanup(const wchar_t* presentMonSession) noexcept;
+
     [[nodiscard]] std::int64_t startQpc() const noexcept;
     [[nodiscard]] std::int64_t lastEventQpc() const noexcept; // trace coverage
     [[nodiscard]] std::uint64_t dpcIsrCount() const noexcept;  // sanity check: should grow fast

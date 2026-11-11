@@ -108,6 +108,38 @@ constexpr GpuModule kGpuModules[] = {
     {"dxgi.dll", false},
 };
 
+// Frame generation libraries a game can load. PresentMon only tells generated
+// frames apart for techniques that report them; for the others, knowing that
+// the library is loaded is the best hint available.
+struct FrameGenLibrary {
+    const char* dll;
+    const char* name;
+};
+constexpr FrameGenLibrary kFrameGenLibraries[] = {
+    {"nvngx_dlssg.dll", "NVIDIA DLSS Frame Generation"},
+    {"sl.dlss_g.dll", "NVIDIA DLSS Frame Generation"},
+    {"amd_fidelityfx_framegeneration_dx12.dll", "AMD FSR Frame Generation"},
+    {"ffx_frameinterpolation_x64.dll", "AMD FSR Frame Generation"},
+    {"libxess_fg.dll", "Intel XeSS Frame Generation"},
+};
+
+std::string toLower(std::string s)
+{
+    for (auto& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+const char* frameGenLibraryName(const std::string& fileName)
+{
+    const auto lower = toLower(fileName);
+    for (const auto& lib : kFrameGenLibraries) {
+        if (lower == lib.dll)
+            return lib.name;
+    }
+    return nullptr;
+}
+
 int gpuModuleIndex(const std::string& fileName)
 {
     std::string lower = fileName;
@@ -227,8 +259,8 @@ struct Properties {
         p->Wnode.Guid = guid;
         p->LogFileMode = logFileMode;
         p->EnableFlags = enableFlags;
-        p->BufferSize = 1024; // KB
-        p->MinimumBuffers = 32;
+        p->BufferSize = 256; // KB; up to 64 MB of kernel memory in total
+        p->MinimumBuffers = 64;
         p->MaximumBuffers = 256;
         p->FlushTimer = 1; // seconds
         p->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
@@ -239,7 +271,7 @@ struct Properties {
 
 struct Module {
     std::uint64_t end = 0;
-    std::string name;
+    std::uint32_t id = 0; // index into Impl::driverStats
 };
 
 } // namespace
@@ -286,7 +318,7 @@ struct KernelTrace::Impl {
     std::unordered_map<std::uint32_t, std::uint32_t> threadToProcess;
     std::map<std::uint64_t, Module> modules; // kernel images by base address
     std::uint64_t lastRoutine = 0;
-    std::string lastRoutineModule;
+    std::uint32_t lastRoutineId = 0;
 
     // ---- CPU sampling of graphics DLLs (callback thread only, except moduleSamples)
     struct ImageRange {
@@ -295,15 +327,21 @@ struct KernelTrace::Impl {
         int module = -1; // index into kGpuModules
     };
     std::unordered_map<std::uint32_t, std::vector<ImageRange>> gpuImages; // PID -> loaded graphics DLLs
+    std::unordered_map<std::uint32_t, std::vector<std::string>> frameGenLibs; // PID -> names; guarded by mutex
     double sampleUs = 1000.0;
     std::array<std::atomic<std::uint64_t>, std::size(kGpuModules)> moduleSamples{};
     std::atomic<std::uint64_t> profileSamples{0}, gameSamples{0};
 
-    void onProfileSample(std::uint64_t ip, std::uint32_t tid, std::int64_t ts)
+    void onProfileSample(std::uint64_t ip, std::uint32_t tid, std::size_t cpu, std::int64_t ts)
     {
         profileSamples.fetch_add(1, std::memory_order_relaxed);
         const auto target = targetPid.load(std::memory_order_relaxed);
-        if (target == 0 || processOf(tid) != target)
+        if (target == 0)
+            return;
+        // The context-switch state already knows who runs on this CPU; only
+        // fall back to the thread table when it doesn't match.
+        const bool known = cpu < cpus.size() && cpus[cpu].valid && cpus[cpu].tid == tid;
+        if ((known ? cpus[cpu].pid : processOf(tid)) != target)
             return;
         gameSamples.fetch_add(1, std::memory_order_relaxed);
         const auto it = gpuImages.find(target);
@@ -437,6 +475,7 @@ struct KernelTrace::Impl {
         std::unordered_map<std::uint32_t, double> background;
     };
     std::atomic<std::uint32_t> targetPid{0};
+    std::array<std::atomic<std::uint32_t>, 2> ownPids{}; // 0 = unset (the idle "process" is skipped anyway)
     std::int64_t bucketTicks = 1;
     std::vector<CpuState> cpus;
     std::map<std::int64_t, OpenBucket> openBuckets;
@@ -451,9 +490,17 @@ struct KernelTrace::Impl {
         return std::min<std::uint8_t>(opts.ccdOfCpu[cpu], core::kMaxCcds - 1);
     }
 
+    std::uint32_t switchesSinceFinalize = 0;
+    std::int64_t cachedBucketIdx = -1;
+    OpenBucket* cachedBucket = nullptr;
+
     OpenBucket& bucketAt(std::int64_t idx)
     {
+        if (idx == cachedBucketIdx)
+            return *cachedBucket; // consecutive events almost always hit the same 10 ms bucket
         auto [it, inserted] = openBuckets.try_emplace(idx);
+        cachedBucketIdx = idx;
+        cachedBucket = &it->second;
         if (inserted) {
             it->second.bucket.startQpc = idx * bucketTicks;
             it->second.bucket.endQpc = (idx + 1) * bucketTicks;
@@ -466,6 +513,9 @@ struct KernelTrace::Impl {
     {
         if (st.tid == 0 || end <= st.since || end - st.since > 10 * freq)
             return; // idle thread, or a nonsense interval
+        // FrameScope and PresentMon are measured separately, not as background load.
+        if (st.pid == ownPids[0].load(std::memory_order_relaxed) || st.pid == ownPids[1].load(std::memory_order_relaxed))
+            return;
         const auto target = targetPid.load(std::memory_order_relaxed);
         const bool game = target != 0 && st.pid == target;
         const auto ccd = ccdOf(cpu);
@@ -503,6 +553,8 @@ struct KernelTrace::Impl {
         while (!openBuckets.empty() &&
                (all || openBuckets.begin()->first < maxBucketSeen - kBucketFinalizeLag)) {
             finalize(openBuckets.begin());
+            if (openBuckets.begin()->first == cachedBucketIdx)
+                cachedBucketIdx = -1;
             openBuckets.erase(openBuckets.begin());
         }
     }
@@ -529,7 +581,8 @@ struct KernelTrace::Impl {
             lastCpuOfThread[newTid] = c;
         }
         st = CpuState{newTid, newPid, ts, true};
-        finalizeOldBuckets(false);
+        if ((++switchesSinceFinalize & 0x3FF) == 0)
+            finalizeOldBuckets(false);
     }
 
     static void WINAPI callback(PEVENT_RECORD r)
@@ -537,21 +590,48 @@ struct KernelTrace::Impl {
         static_cast<Impl*>(r->UserContext)->onEvent(*r);
     }
 
-    std::string resolve(std::uint64_t address)
+    // Per-driver DPC/ISR statistics live on the callback thread (index = driver
+    // id, 0 = unknown) and are copied to the shared `stats` a few times per
+    // second, so the hot path takes no lock and touches no strings.
+    std::vector<core::ModuleLatency> driverStats;
+    std::unordered_map<std::string, std::uint32_t> driverIds;
+    std::int64_t lastStatsPublish = 0;
+
+    std::uint32_t driverId(const std::string& name)
+    {
+        const auto [it, inserted] = driverIds.try_emplace(name, static_cast<std::uint32_t>(driverStats.size()));
+        if (inserted) {
+            core::ModuleLatency m;
+            m.module = name;
+            driverStats.push_back(std::move(m));
+        }
+        return it->second;
+    }
+
+    void publishStats(std::int64_t now, bool force)
+    {
+        if (!force && now - lastStatsPublish < freq / 4)
+            return;
+        lastStatsPublish = now;
+        std::lock_guard lock(mutex);
+        stats.assign(driverStats);
+    }
+
+    std::uint32_t resolve(std::uint64_t address)
     {
         // DPCs from the same driver come in bursts; cache the last lookup.
         if (address == lastRoutine)
-            return lastRoutineModule;
-        std::string name = "unknown";
+            return lastRoutineId;
+        std::uint32_t id = 0;
         auto it = modules.upper_bound(address);
         if (it != modules.begin()) {
             --it;
             if (address < it->second.end)
-                name = it->second.name;
+                id = it->second.id;
         }
         lastRoutine = address;
-        lastRoutineModule = name;
-        return name;
+        lastRoutineId = id;
+        return id;
     }
 
     std::uint32_t processOf(std::uint32_t tid) const
@@ -588,7 +668,7 @@ struct KernelTrace::Impl {
                 // InstructionPointer (ptr), ThreadId (4), Count (2), Reserved (2)
                 if (len < ptr + 4)
                     return bump(counters.malformed);
-                onProfileSample(readPtr(data, 0, ptr), read<std::uint32_t>(data, ptr), ts);
+                onProfileSample(readPtr(data, 0, ptr), read<std::uint32_t>(data, ptr), GetEventProcessorIndex(&r), ts);
                 return;
             }
             // DPC / ISR: InitialTime (8), Routine (ptr), ... ; logged at completion.
@@ -608,56 +688,30 @@ struct KernelTrace::Impl {
                 return bump(counters.malformed);
 
             dpcIsrCount.fetch_add(1, std::memory_order_relaxed);
-            auto module = resolve(readPtr(data, 8, ptr));
-            if (module == "unknown")
+            const auto id = resolve(readPtr(data, 8, ptr));
+            if (id == 0)
                 bump(counters.unresolved);
             const double us = static_cast<double>(duration) * 1e6 / static_cast<double>(freq);
 
-            std::lock_guard lock(mutex);
-            stats.add(kind, module, us);
-            if (us >= opts.keepDpcIsrOverUs)
-                pending.push_back({kind, initial, ts, 0, 0, std::move(module)});
-            return;
-        }
-
-        if (IsEqualGUID(g, kPageFaultGuid) && op == kOpHardFault) {
-            // InitialTime (8), ReadOffset (8), VirtualAddress (ptr), FileObject (ptr),
-            // TThreadId (4), ByteCount (4)
-            if (len < 16 + 2 * ptr + 8)
-                return bump(counters.malformed);
-            const auto initial = read<std::int64_t>(data, 0);
-            if (initial > ts || ts - initial > 10 * freq)
-                return bump(counters.malformed);
-            bump(counters.hardFaults);
-            const auto tid = read<std::uint32_t>(data, 16 + 2 * ptr);
-            const auto bytes = read<std::uint32_t>(data, 16 + 2 * ptr + 4);
-            push({core::EventKind::HardFault, initial, ts, processOf(tid), bytes, {}});
-            return;
-        }
-
-        if (IsEqualGUID(g, kDiskIoGuid) && (op == kOpDiskRead || op == kOpDiskWrite)) {
-            // DiskNumber (4), IrpFlags (4), TransferSize (4), Reserved (4), ByteOffset (8),
-            // FileObject (ptr), Irp (ptr), HighResResponseTime (8), IssuingThreadId (4)
-            const std::size_t respOff = 24 + 2 * ptr;
-            if (len < respOff + 8)
-                return bump(counters.malformed);
-            const auto bytes = read<std::uint32_t>(data, 8);
-            const auto response = static_cast<std::int64_t>(read<std::uint64_t>(data, respOff));
-            if (response < 0 || response > 60 * freq)
-                return bump(counters.malformed);
-            bump(counters.diskIo);
-            const std::uint32_t tid = len >= respOff + 12 ? read<std::uint32_t>(data, respOff + 8) : 0;
-            push({core::EventKind::DiskIo, ts - response, ts, processOf(tid), bytes, {}});
-
-            // A write reaching a shader cache file on disk (lazy writer or mapped
-            // file flush). Timing lags the compile, so it only feeds the findings.
-            if (op == kOpDiskWrite && isCacheObject(readPtr(data, 24, ptr))) {
-                bump(counters.shaderDiskWrites);
-                push({core::EventKind::ShaderCacheWrite, ts, ts, 0, bytes, "disk"});
+            auto& m = driverStats[id];
+            if (kind == core::EventKind::Isr) {
+                ++m.isrCount;
+                m.maxIsrUs = std::max(m.maxIsrUs, us);
+            } else {
+                ++m.dpcCount;
+                m.maxDpcUs = std::max(m.maxDpcUs, us);
             }
+            m.totalUs += us;
+            m.over500us += us >= 500.0;
+            m.over1ms += us >= 1000.0;
+
+            if (us >= opts.keepDpcIsrOverUs)
+                push({kind, initial, ts, 0, 0, m.module});
+            publishStats(ts, false);
             return;
         }
 
+        // Context switches and file I/O are the next most frequent after PerfInfo.
         if (IsEqualGUID(g, kFileIoGuid)) {
             onFileIo(r, op, data, len, ptr, ts);
             return;
@@ -688,6 +742,46 @@ struct KernelTrace::Impl {
             return;
         }
 
+        if (IsEqualGUID(g, kPageFaultGuid) && op == kOpHardFault) {
+            // InitialTime (8), ReadOffset (8), VirtualAddress (ptr), FileObject (ptr),
+            // TThreadId (4), ByteCount (4)
+            if (len < 16 + 2 * ptr + 8)
+                return bump(counters.malformed);
+            const auto initial = read<std::int64_t>(data, 0);
+            if (initial > ts || ts - initial > 10 * freq)
+                return bump(counters.malformed);
+            bump(counters.hardFaults);
+            const auto tid = read<std::uint32_t>(data, 16 + 2 * ptr);
+            const auto bytes = read<std::uint32_t>(data, 16 + 2 * ptr + 4);
+            push({core::EventKind::HardFault, initial, ts, processOf(tid), bytes, {}});
+            return;
+        }
+
+        if (IsEqualGUID(g, kDiskIoGuid) && (op == kOpDiskRead || op == kOpDiskWrite)) {
+            // DiskNumber (4), IrpFlags (4), TransferSize (4), Reserved (4), ByteOffset (8),
+            // FileObject (ptr), Irp (ptr), HighResResponseTime (8), IssuingThreadId (4)
+            const std::size_t respOff = 24 + 2 * ptr;
+            if (len < respOff + 8)
+                return bump(counters.malformed);
+            const auto bytes = read<std::uint32_t>(data, 8);
+            const auto response = static_cast<std::int64_t>(read<std::uint64_t>(data, respOff));
+            if (response < 0 || response > 60 * freq)
+                return bump(counters.malformed);
+            bump(counters.diskIo);
+            const std::uint32_t tid = len >= respOff + 12 ? read<std::uint32_t>(data, respOff + 8) : 0;
+            // Only I/O slow enough to matter for a frame goes onto the timeline.
+            if (response >= freq / 2000) // >= 0.5 ms
+                push({core::EventKind::DiskIo, ts - response, ts, processOf(tid), bytes, {}});
+
+            // A write reaching a shader cache file on disk (lazy writer or mapped
+            // file flush). Timing lags the compile, so it only feeds the findings.
+            if (op == kOpDiskWrite && isCacheObject(readPtr(data, 24, ptr))) {
+                bump(counters.shaderDiskWrites);
+                push({core::EventKind::ShaderCacheWrite, ts, ts, 0, bytes, "disk"});
+            }
+            return;
+        }
+
         if (IsEqualGUID(g, kImageGuid)) {
             // ImageBase (ptr), ImageSize (ptr), ProcessId (4), ImageCheckSum (4),
             // TimeDateStamp (4), Reserved0 (4), DefaultBase (ptr), Reserved1..4 (16),
@@ -703,9 +797,16 @@ struct KernelTrace::Impl {
                 const auto pid = read<std::uint32_t>(data, 2 * ptr);
                 if (op == kOpImageLoad || op == kOpDcStart) {
                     const auto* name = reinterpret_cast<const wchar_t*>(data + nameOff);
-                    const int idx = gpuModuleIndex(fileNameOf(narrow(name, (len - nameOff) / sizeof(wchar_t))));
+                    const auto file = fileNameOf(narrow(name, (len - nameOff) / sizeof(wchar_t)));
+                    const int idx = gpuModuleIndex(file);
                     if (idx >= 0)
                         gpuImages[pid].push_back({base, base + readPtr(data, ptr, ptr), idx});
+                    else if (const char* fg = frameGenLibraryName(file)) {
+                        std::lock_guard lock(mutex);
+                        auto& libs = frameGenLibs[pid];
+                        if (std::ranges::find(libs, fg) == libs.end())
+                            libs.emplace_back(fg);
+                    }
                 } else if (op == kOpImageUnload) {
                     if (const auto it = gpuImages.find(pid); it != gpuImages.end())
                         std::erase_if(it->second, [base](const ImageRange& r) { return r.base == base; });
@@ -716,7 +817,7 @@ struct KernelTrace::Impl {
             if (op == kOpImageLoad || op == kOpDcStart) {
                 const auto size = readPtr(data, ptr, ptr);
                 const auto* name = reinterpret_cast<const wchar_t*>(data + nameOff);
-                modules[base] = Module{base + size, fileNameOf(narrow(name, (len - nameOff) / sizeof(wchar_t)))};
+                modules[base] = Module{base + size, driverId(fileNameOf(narrow(name, (len - nameOff) / sizeof(wchar_t))))};
                 lastRoutine = 0;
             } else if (op == kOpImageUnload) {
                 modules.erase(base);
@@ -829,23 +930,41 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     }
     m->threadToProcess.clear();
     m->modules.clear();
+    m->driverStats.clear();
+    m->driverIds.clear();
+    m->driverId("unknown"); // id 0
+    m->lastStatsPublish = 0;
+    m->frameGenLibs.clear();
+    m->cachedBucketIdx = -1;
     m->lastRoutine = 0;
     m->dpcIsrCount = 0;
     m->counters.reset();
 
     // Prefer a private system logger session (Windows 8+), so we don't fight
     // LatencyMon & co. over the single NT Kernel Logger.
-    bool ok = false;
-    if (!options.forceNtKernelLogger) {
-        ok = m->startSession(kPrivateSessionName, kSessionGuid,
-                             EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE);
+    const auto tryStart = [&] {
+        bool ok = false;
+        if (!options.forceNtKernelLogger) {
+            ok = m->startSession(kPrivateSessionName, kSessionGuid,
+                                 EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE);
+            if (ok)
+                m->description = "private system logger session";
+        }
+        if (!ok) {
+            ok = m->startSession(kNtKernelLoggerName, kSystemTraceControlGuid, EVENT_TRACE_REAL_TIME_MODE);
+            if (ok)
+                m->description = "NT Kernel Logger";
+        }
+        return ok;
+    };
+    bool ok = tryStart();
+    // CPU sampling needs an extra privilege; without it Windows refuses the
+    // whole session. Everything else still works, so retry without sampling.
+    if (!ok && (m->enableFlags & EVENT_TRACE_FLAG_PROFILE)) {
+        m->enableFlags &= ~static_cast<ULONG>(EVENT_TRACE_FLAG_PROFILE);
+        ok = tryStart();
         if (ok)
-            m->description = "private system logger session";
-    }
-    if (!ok && lastError().rfind("Access denied", 0) != 0) {
-        ok = m->startSession(kNtKernelLoggerName, kSystemTraceControlGuid, EVENT_TRACE_REAL_TIME_MODE);
-        if (ok)
-            m->description = "NT Kernel Logger";
+            m->description += ", no CPU sampling (not permitted)";
     }
     if (!ok)
         return false;
@@ -875,6 +994,7 @@ bool KernelTrace::start(const KernelTraceOptions& options)
     m->worker = std::thread([impl = m.get()] {
         ProcessTrace(&impl->consumer, 1, nullptr, nullptr); // blocks until the session stops
         impl->finalizeOldBuckets(true);
+        impl->publishStats(0, true);
         impl->running = false;
     });
     return true;
@@ -913,6 +1033,54 @@ std::vector<core::CpuBucket> KernelTrace::drainCpuBuckets()
 void KernelTrace::setTargetProcess(std::uint32_t pid) noexcept
 {
     m->targetPid = pid;
+}
+
+void KernelTrace::setOwnProcesses(std::uint32_t first, std::uint32_t second) noexcept
+{
+    m->ownPids[0] = first;
+    m->ownPids[1] = second;
+}
+
+std::vector<std::string> KernelTrace::frameGenerationLibraries() const
+{
+    std::lock_guard lock(m->mutex);
+    const auto it = m->frameGenLibs.find(m->targetPid.load());
+    return it == m->frameGenLibs.end() ? std::vector<std::string>{} : it->second;
+}
+
+void KernelTrace::stopStaleSessions(const wchar_t* presentMonSession) noexcept
+{
+    // After a crash the real-time sessions keep running (and keep costing CPU)
+    // until someone stops them. Only our own, uniquely named sessions are touched.
+    for (const wchar_t* name : {static_cast<const wchar_t*>(kPrivateSessionName), presentMonSession}) {
+        if (!name || !*name)
+            continue;
+        struct {
+            EVENT_TRACE_PROPERTIES props;
+            wchar_t names[2 * 1024];
+        } buffer{};
+        buffer.props.Wnode.BufferSize = sizeof(buffer);
+        buffer.props.LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
+        ControlTraceW(0, name, &buffer.props, EVENT_TRACE_CONTROL_STOP);
+    }
+}
+
+namespace {
+wchar_t g_crashPresentMonSession[128] = {};
+LPTOP_LEVEL_EXCEPTION_FILTER g_previousFilter = nullptr;
+
+LONG WINAPI crashCleanup(EXCEPTION_POINTERS* info)
+{
+    KernelTrace::stopStaleSessions(g_crashPresentMonSession);
+    return g_previousFilter ? g_previousFilter(info) : EXCEPTION_CONTINUE_SEARCH;
+}
+} // namespace
+
+void KernelTrace::installCrashCleanup(const wchar_t* presentMonSession) noexcept
+{
+    if (presentMonSession)
+        wcsncpy(g_crashPresentMonSession, presentMonSession, std::size(g_crashPresentMonSession) - 1);
+    g_previousFilter = SetUnhandledExceptionFilter(&crashCleanup);
 }
 
 std::int64_t KernelTrace::startQpc() const noexcept { return m->startQpc; }
@@ -1008,6 +1176,10 @@ bool KernelTrace::isRunning() const noexcept { return false; }
 std::vector<core::SystemEvent> KernelTrace::drainEvents() { return {}; }
 std::vector<core::CpuBucket> KernelTrace::drainCpuBuckets() { return {}; }
 void KernelTrace::setTargetProcess(std::uint32_t) noexcept {}
+void KernelTrace::setOwnProcesses(std::uint32_t, std::uint32_t) noexcept {}
+std::vector<std::string> KernelTrace::frameGenerationLibraries() const { return {}; }
+void KernelTrace::stopStaleSessions(const wchar_t*) noexcept {}
+void KernelTrace::installCrashCleanup(const wchar_t*) noexcept {}
 std::int64_t KernelTrace::startQpc() const noexcept { return 0; }
 std::int64_t KernelTrace::lastEventQpc() const noexcept { return 0; }
 std::uint64_t KernelTrace::dpcIsrCount() const noexcept { return 0; }

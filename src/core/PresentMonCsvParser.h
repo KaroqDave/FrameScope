@@ -23,9 +23,11 @@ namespace framescope::core {
 // their own. They don't become FrameRecords (they say nothing about how the
 // game runs); they're counted on the next application frame instead.
 //
-// Lines before the header (status text) are ignored. The parser locks onto
-// the first swap chain it sees, so frames from overlays or launcher windows
-// in the same process don't get mixed in. The timeline is the running sum of
+// Lines before the header (status text) are ignored. The parser tracks one
+// swap chain, so frames from overlays or launcher windows don't get mixed in.
+// Games create a new swap chain when the resolution or display mode changes
+// (and a new process on restart); when the tracked one falls silent and
+// another keeps presenting, the parser follows that one. The timeline is the running sum of
 // frame times, which avoids depending on PresentMon's time-column format.
 class PresentMonCsvParser {
 public:
@@ -50,6 +52,13 @@ public:
     [[nodiscard]] std::size_t generatedRows() const noexcept { return m_generatedRows; }
     [[nodiscard]] std::size_t skippedRows() const noexcept { return m_skippedRows; }
     [[nodiscard]] const std::string& lockedSwapChain() const noexcept { return m_lockedKey; }
+    // How often the tracked swap chain was replaced (resolution or display
+    // mode change, game restart).
+    [[nodiscard]] std::size_t swapChainChanges() const noexcept { return m_swapChainChanges; }
+
+    // Rows another swap chain must present in a row, while the tracked one is
+    // silent, before the parser follows it.
+    static constexpr std::size_t kRowsToSwitchSwapChain = 240;
     [[nodiscard]] const std::string& headerLine() const noexcept { return m_header; }
 
 private:
@@ -77,6 +86,9 @@ private:
     std::int64_t m_qpcFrequency = 10'000'000;
 
     std::string m_lockedKey;
+    std::string m_candidateKey;          // another swap chain presenting while the tracked one is silent
+    std::size_t m_candidateRows = 0;
+    std::size_t m_swapChainChanges = 0;
     std::string m_header;
     double m_elapsedMs = 0.0;
     std::size_t m_skippedRows = 0;

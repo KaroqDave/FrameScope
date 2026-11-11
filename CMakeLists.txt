@@ -64,6 +64,8 @@ add_library(framescope_core STATIC
     src/core/DisplayAnalysis.cpp
     src/core/PresentMonInfo.h
     src/core/PresentMonInfo.cpp
+    src/core/Overhead.h
+    src/core/Overhead.cpp
 )
 target_include_directories(framescope_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

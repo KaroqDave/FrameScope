@@ -28,6 +28,8 @@ class LatencyStats {
 public:
     void add(EventKind kind, const std::string& module, double durationUs);
     void clear() { m_modules.clear(); }
+    // Replaces everything with per-driver totals collected elsewhere.
+    void assign(const std::vector<ModuleLatency>& modules);
 
     // Sorted by worst single DPC/ISR, longest first.
     [[nodiscard]] std::vector<ModuleLatency> worst(std::size_t n) const;

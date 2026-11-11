@@ -8,6 +8,7 @@
 #include "core/DisplayAnalysis.h"
 #include "core/EventTimeline.h"
 #include "core/LatencyStats.h"
+#include "core/Overhead.h"
 #include "core/PresentMonCsvParser.h"
 #include "core/PresentMonInfo.h"
 #include "core/SessionStats.h"
@@ -887,7 +888,7 @@ void correlateAmdThrottle()
 
     // Findings mention hotspot
     const auto fs = sessionFindings(h.tl, nullptr);
-    CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "GPU hotspot near its limit"; }));
+    CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "GPU temperature near its limit"; }));
     CHECK(std::ranges::any_of(fs, [](const Finding& x) { return x.title == "No GPU throttling"; }));
 }
 
@@ -1347,6 +1348,115 @@ void refreshFindingsFromSavedSession()
     CHECK(std::ranges::any_of(f, [](const Finding& x) { return x.title == "Enough free RAM"; }));
 }
 
+void overheadAndFrameGenLibraries()
+{
+    Overhead o;
+    o.captureSeconds = 5;
+    CHECK(overheadFindings(o).empty()); // too short
+
+    o.captureSeconds = 600;
+    o.frameScopeCpuSeconds = 90;  // 0.15 cores
+    o.presentMonCpuSeconds = 30;  // 0.05 cores
+    o.eventsTotal = 50'000'000;
+    o.offVCacheCores = true;
+    auto f = overheadFindings(o);
+    CHECK(f.size() == 1 && f[0].level == Finding::Level::Good && f[0].title == "FrameScope's own load is low");
+    CHECK(f[0].detail.starts_with("Measuring used ~0.20 CPU cores on average (FrameScope 0.15, PresentMon 0.05), kept off"));
+
+    o.frameScopeCpuSeconds = 700;
+    f = overheadFindings(o);
+    CHECK(f[0].level == Finding::Level::Warning && f[0].detail.ends_with("Light system trace lowers it"));
+    o.lightTrace = true;
+    CHECK(!overheadFindings(o)[0].detail.ends_with("lowers it"));
+
+    o.frameScopeCpuSeconds = 60;
+    o.eventsLost = 2'000'000;
+    f = overheadFindings(o);
+    CHECK(f[0].title == "Trace events were lost" && f[0].level == Finding::Level::Warning);
+    o.eventsLost = 100; // negligible
+    CHECK(overheadFindings(o)[0].level == Finding::Level::Good);
+
+    CHECK(frameGenerationLibraryFindings({}, false).empty());
+    CHECK(frameGenerationLibraryFindings({"NVIDIA DLSS Frame Generation"}, true).empty());
+    const auto g = frameGenerationLibraryFindings({"NVIDIA DLSS Frame Generation"}, false);
+    CHECK(g.size() == 1 && g[0].title == "Frame generation library loaded");
+    CHECK(g[0].detail.starts_with("The game has loaded NVIDIA DLSS Frame Generation."));
+}
+
+void timelinePruneEvents()
+{
+    EventTimeline tl(kFreq);
+    std::vector<SystemEvent> evs{ev(EventKind::Dpc, 100, 1), ev(EventKind::ShaderCacheWrite, 150, 0, 42),
+                                 ev(EventKind::DiskIo, 200, 5), ev(EventKind::Dpc, 5000, 1)};
+    tl.append(evs);
+    tl.pruneEventsBefore(ms2t(1000));
+    CHECK(tl.size() == 2 && tl.eventsSeen() == 4);
+    CHECK(tl.events()[0].kind == EventKind::ShaderCacheWrite && tl.events()[1].startQpc == ms2t(5000));
+    CHECK(tl.overlapping(ms2t(4990), ms2t(5010)).size() == 1);
+
+    LatencyStats ls;
+    ModuleLatency a;
+    a.module = "a.sys";
+    a.dpcCount = 3;
+    a.maxDpcUs = 900;
+    ModuleLatency unused;
+    unused.module = "unused.sys";
+    ls.assign({a, unused});
+    CHECK(ls.worst(5).size() == 1 && ls.worst(5)[0].module == "a.sys");
+}
+
+void nvidiaTemperatureLimit()
+{
+    // NVIDIA: reasons from the driver, temperature near the slowdown threshold flagged like AMD's hotspot.
+    EventTimeline tl(kFreq);
+    std::vector<SystemSample> ss;
+    for (int i = 0; i < 100; ++i) {
+        auto s = sample(i * 250.0);
+        auto g = gpu(2700, i < 10 ? 89 : 70, i < 10 ? gpu_reason::HotspotHigh : 0);
+        g.limitC = 90;
+        g.usagePct = 99;
+        s.gpu = g;
+        ss.push_back(s);
+    }
+    tl.appendSamples(ss);
+    const auto f = sessionFindings(tl, nullptr);
+    const auto it = std::ranges::find_if(f, [](const Finding& x) { return x.title == "GPU temperature near its limit"; });
+    CHECK(it != f.end() && it->level == Finding::Level::Warning);
+    if (it != f.end())
+        CHECK(it->detail.starts_with("10 of 100 samples close to the point where the GPU slows itself down (max 89 °C)"));
+    CHECK(std::ranges::any_of(f, [](const Finding& x) { return x.title == "No GPU throttling"; }));
+    CHECK(describe(ss[0]).find("(limit 90 °C)") != std::string::npos);
+}
+
+void parserFollowsNewSwapChain()
+{
+    PresentMonCsvParser p;
+    p.feedLine("Application,ProcessID,SwapChainAddress,FrameTime,CPUBusy,GPUBusy");
+    const auto row = [&](std::string_view pid, std::string_view chain) {
+        return p.feedLine(std::format("g.exe,{},{},10,5,9", pid, chain));
+    };
+    CHECK(row("1", "0xA").has_value());
+    // An overlay presenting in between never takes over.
+    for (int i = 0; i < 1000; ++i) {
+        CHECK(!row("1", "0xOVERLAY"));
+        CHECK(row("1", "0xA").has_value());
+    }
+    CHECK(p.swapChainChanges() == 0);
+
+    // Resolution change: 0xA falls silent, 0xB presents. After a short gap the parser follows.
+    std::size_t lost = 0;
+    while (!row("1", "0xB"))
+        ++lost;
+    CHECK(lost == PresentMonCsvParser::kRowsToSwitchSwapChain - 1);
+    CHECK(p.lockedSwapChain() == "1:0xB" && p.swapChainChanges() == 1);
+    CHECK(row("1", "0xB").has_value());
+
+    // Game restart: new process.
+    while (!row("2", "0xC")) {}
+    auto f = row("2", "0xC");
+    CHECK(f && f->processId == 2 && p.swapChainChanges() == 2);
+}
+
 } // namespace
 
 int main()
@@ -1400,6 +1510,10 @@ int main()
         {"sessionFileDisplayColumns", sessionFileDisplayColumns},
         {"presentMonHelp", presentMonHelp},
         {"refreshFindingsFromSavedSession", refreshFindingsFromSavedSession},
+        {"overheadAndFrameGenLibraries", overheadAndFrameGenLibraries},
+        {"timelinePruneEvents", timelinePruneEvents},
+        {"nvidiaTemperatureLimit", nvidiaTemperatureLimit},
+        {"parserFollowsNewSwapChain", parserFollowsNewSwapChain},
     };
 
     for (const auto& [name, fn] : tests) {

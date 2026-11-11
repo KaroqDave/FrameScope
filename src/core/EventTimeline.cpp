@@ -24,6 +24,7 @@ EventTimeline::EventTimeline(std::int64_t qpcFrequency)
 void EventTimeline::clear()
 {
     m_events.clear();
+    m_eventsSeen = 0;
     m_maxDuration = 0;
     m_traceStart.reset();
     m_coveredUntil = 0;
@@ -53,6 +54,7 @@ void EventTimeline::append(std::span<const SystemEvent> events)
     const auto oldSize = static_cast<std::ptrdiff_t>(m_events.size());
 
     m_events.insert(m_events.end(), events.begin(), events.end());
+    m_eventsSeen += events.size();
     for (const auto& e : events) {
         m_maxDuration = std::max(m_maxDuration, e.durationQpc());
         noteCoverage(e.endQpc);
@@ -75,6 +77,12 @@ std::vector<const SystemEvent*> EventTimeline::overlapping(std::int64_t from, st
             out.push_back(&*it);
     }
     return out;
+}
+
+void EventTimeline::pruneEventsBefore(std::int64_t qpc)
+{
+    // Stable: the vector stays sorted by start time.
+    std::erase_if(m_events, [qpc](const SystemEvent& e) { return e.endQpc < qpc && e.kind != EventKind::ShaderCacheWrite; });
 }
 
 void EventTimeline::appendSamples(std::span<const SystemSample> samples)

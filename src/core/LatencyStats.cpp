@@ -37,4 +37,13 @@ std::vector<ModuleLatency> LatencyStats::worst(std::size_t n) const
     return out;
 }
 
+void LatencyStats::assign(const std::vector<ModuleLatency>& modules)
+{
+    m_modules.clear();
+    for (const auto& m : modules) {
+        if (m.dpcCount + m.isrCount > 0)
+            m_modules.emplace(m.module, m);
+    }
+}
+
 } // namespace framescope::core

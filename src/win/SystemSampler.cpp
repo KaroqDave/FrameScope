@@ -64,6 +64,8 @@ public:
         m_reasons = load<Reasons>("nvmlDeviceGetCurrentClocksEventReasons");
         if (!m_reasons)
             m_reasons = load<Reasons>("nvmlDeviceGetCurrentClocksThrottleReasons");
+        m_utilization = load<Utilization>("nvmlDeviceGetUtilizationRates");
+        m_threshold = load<Threshold>("nvmlDeviceGetTemperatureThreshold");
 
         if (!m_init || !m_handle || !m_clock || m_init() != 0)
             return;
@@ -76,6 +78,11 @@ public:
             if (m_name(m_device, buf, sizeof(buf)) == 0)
                 m_deviceName = buf;
         }
+        // Temperature at which the driver starts slowing the GPU down.
+        unsigned int limit = 0;
+        if (m_threshold && m_threshold(m_device, 1 /*NVML_TEMPERATURE_THRESHOLD_SLOWDOWN*/, &limit) == 0 &&
+            limit >= 60 && limit <= 130)
+            m_slowdownC = limit;
     }
 
     ~Nvml()
@@ -89,7 +96,7 @@ public:
     [[nodiscard]] bool ok() const { return m_ok; }
     [[nodiscard]] const std::string& deviceName() const { return m_deviceName; }
 
-    std::optional<core::GpuSample> sample() const
+    std::optional<core::GpuSample> sample()
     {
         if (!m_ok)
             return std::nullopt;
@@ -101,9 +108,25 @@ public:
             s.temperatureC = v;
         if (m_power && m_power(m_device, &v) == 0)
             s.powerW = v / 1000.0;
+        struct { unsigned int gpu; unsigned int memory; } util{};
+        if (m_utilization && m_utilization(m_device, &util) == 0)
+            s.usagePct = util.gpu;
+
+        // Throttle reasons straight from the driver. Older drivers without them
+        // get the same clock-drop inference as AMD cards.
         unsigned long long r = 0;
-        if (m_reasons && m_reasons(m_device, &r) == 0)
+        if (m_reasons && m_reasons(m_device, &r) == 0) {
             s.reasons = r;
+        } else {
+            s.driverReportsReasons = false;
+            m_inference.apply(s);
+        }
+        // Same "close to the limit" warning AMD cards get from their hotspot sensor.
+        if (m_slowdownC > 0) {
+            s.limitC = m_slowdownC;
+            if (s.temperatureC >= m_slowdownC - 3.0)
+                s.reasons |= core::gpu_reason::HotspotHigh;
+        }
         return s;
     }
 
@@ -117,6 +140,8 @@ private:
     using Temp = int (*)(Device, int, unsigned int*);
     using Power = int (*)(Device, unsigned int*);
     using Reasons = int (*)(Device, unsigned long long*);
+    using Utilization = int (*)(Device, void*);
+    using Threshold = int (*)(Device, int, unsigned int*);
 
     template <typename F>
     F load(const char* name)
@@ -129,6 +154,10 @@ private:
     bool m_initialised = false;
     bool m_ok = false;
     std::string m_deviceName;
+    double m_slowdownC = 0.0;
+    core::GpuThrottleInference m_inference;
+    Utilization m_utilization = nullptr;
+    Threshold m_threshold = nullptr;
     Init m_init = nullptr;
     Shutdown m_shutdown = nullptr;
     HandleByIndex m_handle = nullptr;
@@ -430,6 +459,60 @@ bool isElevated()
     return ok && elevation.TokenIsElevated != 0;
 }
 
+double processCpuSeconds(std::uint32_t pid)
+{
+    HANDLE h = pid == 0 ? GetCurrentProcess() : OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h)
+        return -1.0;
+    FILETIME created{}, exited{}, kernel{}, user{};
+    const bool ok = GetProcessTimes(h, &created, &exited, &kernel, &user);
+    if (pid != 0)
+        CloseHandle(h);
+    if (!ok)
+        return -1.0;
+    const auto ticks = [](const FILETIME& t) { return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime; };
+    return static_cast<double>(ticks(kernel) + ticks(user)) / 1e7;
+}
+
+std::uint32_t currentProcessId()
+{
+    return GetCurrentProcessId();
+}
+
+bool keepOffVCacheCores(const core::CpuTopology& topology)
+{
+    if (!topology.hasAsymmetricCache())
+        return false;
+    DWORD_PTR mask = 0;
+    for (std::size_t cpu = 0; cpu < topology.ccdOfCpu.size() && cpu < sizeof(DWORD_PTR) * 8; ++cpu) {
+        if (topology.ccdOfCpu[cpu] != topology.vcacheCcd)
+            mask |= DWORD_PTR{1} << cpu;
+    }
+    // Child processes started afterwards (PresentMon) inherit the mask.
+    return mask != 0 && SetProcessAffinityMask(GetCurrentProcess(), mask) != 0;
+}
+
+void tieToThisProcess(std::uint32_t pid)
+{
+    // One job for all children: when FrameScope goes away for any reason
+    // (crash, task manager), Windows ends them too.
+    static HANDLE job = [] {
+        HANDLE j = CreateJobObjectW(nullptr, nullptr);
+        if (j) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info, sizeof(info));
+        }
+        return j;
+    }();
+    if (!job)
+        return;
+    if (HANDLE h = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, pid)) {
+        AssignProcessToJobObject(job, h);
+        CloseHandle(h);
+    }
+}
+
 void deleteLegacyRegistrySettings()
 {
     RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\FrameScope");
@@ -456,6 +539,10 @@ core::CpuTopology queryCpuTopology() { return {}; }
 std::string processName(std::uint32_t) { return {}; }
 bool isElevated() { return false; }
 void deleteLegacyRegistrySettings() {}
+double processCpuSeconds(std::uint32_t) { return -1.0; }
+std::uint32_t currentProcessId() { return 0; }
+bool keepOffVCacheCores(const core::CpuTopology&) { return false; }
+void tieToThisProcess(std::uint32_t) {}
 
 } // namespace framescope::win
 

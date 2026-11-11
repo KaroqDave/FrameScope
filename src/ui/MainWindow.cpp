@@ -46,6 +46,7 @@ constexpr auto kKeyPresentMon = "capture/presentMonPath";
 constexpr auto kKeyProcess = "capture/processName";
 constexpr auto kKeyTrace = "capture/systemTrace";
 constexpr auto kKeyLastDir = "files/lastDir";
+constexpr auto kKeyLightTrace = "capture/lightTrace";
 
 constexpr int kBaselineSeconds = 30;
 
@@ -124,6 +125,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&m_capture, &capture::PresentMonCapture::framesCaptured, this, &MainWindow::onFrames);
     connect(&m_capture, &capture::PresentMonCapture::logMessage, this, &MainWindow::log);
     connect(&m_capture, &capture::PresentMonCapture::started, this, [this] {
+        const auto pid = m_capture.processId();
+        win::tieToThisProcess(pid); // PresentMon must not outlive FrameScope
+        m_trace.setOwnProcesses(win::currentProcessId(), pid);
         log(tr("Capture started. Waiting for frames from %1 …").arg(m_processName->text()));
     });
     connect(&m_capture, &capture::PresentMonCapture::stopped, this, &MainWindow::onCaptureStopped);
@@ -139,7 +143,8 @@ MainWindow::MainWindow(QWidget* parent)
     m_refreshTimer = new QTimer(this);
     m_refreshTimer->setInterval(33);
     connect(m_refreshTimer, &QTimer::timeout, this, [this] {
-        if (m_dirty)
+        // Nothing to draw while minimised: the game is in front anyway.
+        if (m_dirty && !isMinimized())
             refresh();
     });
     m_refreshTimer->start();
@@ -313,6 +318,17 @@ void MainWindow::buildMenus()
     add(tools, tr("&Compare with earlier run…"), &MainWindow::compareWithEarlierRun);
     tools->addSeparator();
     // Stays enabled while capturing: a snapshot mid-capture is useful too.
+    m_lightTraceAction = tools->addAction(tr("&Light system trace"));
+    m_lightTraceAction->setCheckable(true);
+    m_lightTraceAction->setChecked(QSettings(settingsFile(), QSettings::IniFormat).value(kKeyLightTrace, false).toBool());
+    m_lightTraceAction->setToolTip(tr("Less overhead: no CPU sampling and no file tracking, so shader compilation "
+                                      "isn't detected. Everything else stays."));
+    tools->setToolTipsVisible(true);
+    connect(m_lightTraceAction, &QAction::toggled, this, [](bool on) {
+        QSettings(settingsFile(), QSettings::IniFormat).setValue(kKeyLightTrace, on);
+    });
+    m_fileActions << m_lightTraceAction;
+    tools->addSeparator();
     tools->addAction(tr("Save &diagnostics…"), this, &MainWindow::saveDiagnostics);
 }
 
@@ -340,8 +356,29 @@ bool MainWindow::startSystemTrace(std::uint32_t targetPid)
     if (topo.hasAsymmetricCache() && m_mode == Mode::Capture)
         log(tr("CPU has 3D V-Cache on CCD%1: checking where the game's threads run.").arg(topo.vcacheCcd));
 
+    // Stay out of the game's way: on CPUs with one V-Cache CCD, FrameScope and
+    // the PresentMon it starts run on the other cores from here on.
+    if (!m_affinityChecked) {
+        m_affinityChecked = true;
+        m_offVCacheCores = win::keepOffVCacheCores(topo);
+        if (m_offVCacheCores)
+            log(tr("FrameScope and PresentMon are kept off the V-Cache cores the game uses."));
+    }
+
     etw::KernelTraceOptions opts;
     opts.ccdOfCpu = topo.ccdOfCpu;
+    const bool light = m_lightTraceAction->isChecked();
+    opts.compilerSampling = !light;
+    opts.shaderCache = !light;
+    if (light)
+        log(tr("Light system trace: no CPU sampling and no file tracking (shader compilation isn't detected)."));
+    m_overhead = {};
+    m_overhead.lightTrace = light;
+    m_overhead.offVCacheCores = m_offVCacheCores;
+    m_ownCpuAtStart = win::processCpuSeconds(0);
+    m_captureStartMs = QDateTime::currentMSecsSinceEpoch();
+    m_frameGenLibraries.clear();
+    m_lastFindingsUpdate = 0;
     m_sampler.setTargetProcess(targetPid);
     m_sampler.start(250);
 
@@ -351,12 +388,29 @@ bool MainWindow::startSystemTrace(std::uint32_t targetPid)
         return false;
     }
     m_trace.setTargetProcess(targetPid);
+    m_trace.setOwnProcesses(win::currentProcessId(), 0); // PresentMon's PID follows when it has started
     m_timeline.setTraceStart(m_trace.startQpc());
     m_warnedNoDpc = false;
     m_loggedSensors = false;
     log(tr("System trace running (%1).").arg(qs(m_trace.sessionDescription())));
     m_traceTimer->start();
     return true;
+}
+
+void MainWindow::updateOverhead()
+{
+    const double own = win::processCpuSeconds(0);
+    if (own >= 0.0 && m_ownCpuAtStart >= 0.0)
+        m_overhead.frameScopeCpuSeconds = own - m_ownCpuAtStart;
+    // PresentMon's total; keep the last value once the process is gone.
+    if (const auto pid = m_capture.processId(); pid != 0) {
+        if (const double pm = win::processCpuSeconds(pid); pm >= 0.0)
+            m_overhead.presentMonCpuSeconds = pm;
+    }
+    m_overhead.captureSeconds = static_cast<double>(QDateTime::currentMSecsSinceEpoch() - m_captureStartMs) / 1000.0;
+    const auto d = m_trace.diagnostics();
+    m_overhead.eventsLost = d.eventsLost;
+    m_overhead.eventsTotal = d.eventsTotal;
 }
 
 void MainWindow::stopSystemTrace()
@@ -390,10 +444,20 @@ void MainWindow::pumpTrace(bool final)
             updateVerdict();
             m_view->update();
         }
-        // CPU buckets are only needed until their spikes are attributed.
-        if (!final)
-            m_timeline.pruneBucketsBefore(m_timeline.coveredUntil() - m_timeline.fromMilliseconds(30'000.0));
-        updateFindings();
+        // CPU buckets and events are only needed until their spikes are attributed.
+        if (!final) {
+            const auto keepFrom = m_timeline.coveredUntil() - m_timeline.fromMilliseconds(30'000.0);
+            m_timeline.pruneBucketsBefore(keepFrom);
+            m_timeline.pruneEventsBefore(keepFrom);
+        }
+        m_frameGenLibraries = m_trace.frameGenerationLibraries();
+        updateOverhead();
+        // Rebuilding the findings walks the whole session; every 5 s is plenty while capturing.
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (final || now - m_lastFindingsUpdate >= 5000) {
+            m_lastFindingsUpdate = now;
+            updateFindings();
+        }
     }
 
     // A session that starts fine but delivers nothing is the most likely
@@ -472,11 +536,12 @@ void MainWindow::onCaptureStopped(int exitCode)
 
 void MainWindow::onFrames(const std::vector<core::FrameRecord>& frames)
 {
-    if (m_gamePid == 0 && !frames.empty() && frames.front().processId != 0) {
-        m_gamePid = frames.front().processId;
+    // Also after a game restart: the parser follows the new process.
+    if (!frames.empty() && frames.back().processId != 0 && frames.back().processId != m_gamePid) {
+        m_gamePid = frames.back().processId;
         m_displayCacheTime = 0;
-        if (!frames.front().application.empty())
-            m_application = frames.front().application;
+        if (!frames.back().application.empty())
+            m_application = frames.back().application;
         m_trace.setTargetProcess(m_gamePid);
         m_sampler.setTargetProcess(m_gamePid);
         log(tr("Game process: %1 (PID %2)").arg(qs(m_application)).arg(m_gamePid));
@@ -506,6 +571,13 @@ void MainWindow::startBaseline()
     if (m_mode != Mode::Idle || !etw::KernelTrace::isSupported())
         return;
 
+    // The baseline reuses the trace and timeline; keep what the last capture
+    // found by freezing its findings first.
+    if (!m_loadedFindings && !m_session.frames().empty()) {
+        auto drivers = currentDrivers();
+        m_loadedFindings = currentFindings();
+        m_loadedDrivers = std::move(drivers);
+    }
     m_mode = Mode::Baseline;
     m_timeline.clear();
     setBusy(true);
@@ -790,7 +862,17 @@ void MainWindow::saveDiagnostics()
     if (const auto err = m_trace.lastError(); !err.empty())
         o << "Last error   " << qs(err) << "\n";
     o << qs(etw::describe(m_trace.diagnostics()));
-    o << "Timeline     " << m_timeline.size() << " events, game CPU time by CCD:";
+    o << "Trace mode   " << (m_overhead.lightTrace ? "light" : "full")
+      << (m_offVCacheCores ? ", FrameScope kept off the V-Cache cores" : "") << "\n";
+    o << "Own load     " << QString::number(m_overhead.cores(), 'f', 2) << " cores over "
+      << QString::number(m_overhead.captureSeconds, 'f', 0) << " s (FrameScope "
+      << QString::number(m_overhead.frameScopeCpuSeconds, 'f', 1) << " s CPU, PresentMon "
+      << QString::number(m_overhead.presentMonCpuSeconds, 'f', 1) << " s CPU)\n";
+    o << "Frame gen    libraries loaded by the game: ";
+    for (const auto& lib : m_frameGenLibraries)
+        o << qs(lib) << "; ";
+    o << (m_frameGenLibraries.empty() ? "none seen" : "") << "\n";
+    o << "Timeline     " << m_timeline.size() << " events kept of " << m_timeline.eventsSeen() << ", game CPU time by CCD:";
     for (std::size_t i = 0; i < m_timeline.topology().ccdCount(); ++i)
         o << " CCD" << i << "=" << qRound(m_timeline.gameUsByCcdTotal()[i] / 1000.0) << " ms";
     o << ", " << m_timeline.gameCrossCcdMigrationsTotal() << " cross-CCD migrations\n";
@@ -805,7 +887,7 @@ void MainWindow::saveDiagnostics()
       << (parser.hasFrameType() ? "yes" : "no") << ", generated frame rows " << parser.generatedRows()
       << (parser.frameGenerationName().empty() ? QString{} : QStringLiteral(" (%1)").arg(qs(parser.frameGenerationName()))) << "\n";
     o << "QPC times    " << (parser.hasQpcTimes() ? "yes" : "no (spikes can't be matched to system events)") << "\n";
-    o << "Swap chain   " << qs(parser.lockedSwapChain()) << "\n";
+    o << "Swap chain   " << qs(parser.lockedSwapChain()) << " (changed " << parser.swapChainChanges() << " times)\n";
     o << "Skipped rows " << parser.skippedRows() << "\n";
     o << "Game         " << qs(m_application) << " (PID " << m_gamePid << ")\n";
 
@@ -863,6 +945,15 @@ std::vector<core::Finding> MainWindow::currentFindings() const
     auto findings = m_loadedFindings ? *m_loadedFindings
                                      : core::sessionFindings(m_timeline, m_latency.empty() ? nullptr : &m_latency,
                                                              m_correlatorConfig);
+    if (!m_loadedFindings) {
+        // Live session: what measuring cost, and frame generation PresentMon can't see.
+        if (m_timeline.traceStart()) {
+            for (auto& f : core::overheadFindings(m_overhead))
+                findings.push_back(std::move(f));
+        }
+        for (auto& f : core::frameGenerationLibraryFindings(m_frameGenLibraries, !m_session.frameGeneration().empty()))
+            findings.push_back(std::move(f));
+    }
     core::refreshFrameFindings(findings, m_session.frames(), m_session.spikes(), m_session.frameGeneration(),
                                &displayAnalysis());
     return findings;

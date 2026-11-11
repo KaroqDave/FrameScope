@@ -34,6 +34,7 @@ struct GpuSample {
     double powerW = 0.0;
     std::uint64_t reasons = 0;           // gpu_reason bits
     std::optional<double> hotspotC;      // junction temperature (AMD)
+    std::optional<double> limitC;        // temperature where the driver starts throttling (NVIDIA)
     std::optional<double> usagePct;      // GPU load
     bool driverReportsReasons = true;    // false: reasons are inferred (ClockDrop/HotspotHigh)
 };

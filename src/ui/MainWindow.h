@@ -7,6 +7,7 @@
 #include "core/DisplayAnalysis.h"
 #include "core/EventTimeline.h"
 #include "core/LatencyStats.h"
+#include "core/Overhead.h"
 #include "etw/KernelTrace.h"
 #include "win/SystemSampler.h"
 
@@ -15,6 +16,7 @@
 #include <optional>
 #include <vector>
 
+class QAction;
 class QCheckBox;
 class QLabel;
 class QLineEdit;
@@ -70,6 +72,7 @@ private:
     void refresh();
     void updateVerdict();
     void updateFindings();
+    void updateOverhead();
     [[nodiscard]] std::vector<core::Finding> currentFindings() const;
     [[nodiscard]] std::vector<core::ModuleLatency> currentDrivers() const;
     [[nodiscard]] const core::DisplayAnalysis& displayAnalysis() const;
@@ -94,6 +97,16 @@ private:
     std::vector<core::ModuleLatency> m_loadedDrivers;
     std::vector<core::Finding> m_baselineFindings;
     std::optional<core::RunComparison> m_comparison;
+
+    // FrameScope's own footprint during the capture
+    core::Overhead m_overhead;
+    double m_ownCpuAtStart = 0.0;
+    qint64 m_captureStartMs = 0;
+    bool m_offVCacheCores = false;
+    bool m_affinityChecked = false;
+    std::vector<std::string> m_frameGenLibraries;
+    qint64 m_lastFindingsUpdate = 0;
+    QAction* m_lightTraceAction = nullptr;
 
     mutable core::DisplayAnalysis m_displayCache;
     mutable std::size_t m_displayCacheFrames = 0;

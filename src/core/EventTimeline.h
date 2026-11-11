@@ -36,6 +36,12 @@ public:
     // Events whose [start, end] overlaps [from, to].
     [[nodiscard]] std::vector<const SystemEvent*> overlapping(std::int64_t from, std::int64_t to) const;
 
+    // Drops events that ended before `qpc`; they're only needed until the
+    // spikes around them are attributed. Shader cache writes stay (the session
+    // findings and saved sessions use them).
+    void pruneEventsBefore(std::int64_t qpc);
+    [[nodiscard]] std::size_t eventsSeen() const noexcept { return m_eventsSeen; }
+
     // ---- Periodic system samples (RAM, VRAM, GPU clocks/throttling ...)
     void appendSamples(std::span<const SystemSample> samples);
     [[nodiscard]] const std::vector<SystemSample>& samples() const noexcept { return m_samples; }
@@ -77,6 +83,7 @@ private:
     std::int64_t m_freq;
     std::vector<SystemEvent> m_events;
     std::int64_t m_maxDuration = 0;
+    std::size_t m_eventsSeen = 0;
     std::optional<std::int64_t> m_traceStart;
     std::int64_t m_coveredUntil = 0;
 

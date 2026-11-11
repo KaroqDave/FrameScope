@@ -51,6 +51,19 @@ std::string processName(std::uint32_t pid);
 // True if this process runs with admin rights (needed for ETW and PresentMon).
 bool isElevated();
 
+// Total CPU time (user + kernel) a process has used so far, in seconds;
+// pid 0 = this process. Negative if the process can't be queried.
+double processCpuSeconds(std::uint32_t pid);
+std::uint32_t currentProcessId();
+
+// On CPUs where only one CCD has 3D V-Cache, games run on that CCD. This keeps
+// FrameScope (and the PresentMon it starts) on the other cores, out of the
+// game's way. Returns false (and changes nothing) on other CPUs.
+bool keepOffVCacheCores(const core::CpuTopology& topology);
+
+// Makes Windows end the given child process when FrameScope ends, however it ends.
+void tieToThisProcess(std::uint32_t pid);
+
 // Removes HKCU\Software\FrameScope, where beta.1-beta.5 kept their settings.
 void deleteLegacyRegistrySettings();
 

@@ -153,11 +153,29 @@ std::optional<FrameRecord> PresentMonCsvParser::feedLine(std::string_view line)
     std::string key{column(cols, m_pidCol)};
     key += ':';
     key += column(cols, m_swapChainCol);
-    if (m_lockedKey.empty())
+    if (m_lockedKey.empty()) {
         m_lockedKey = key;
-    else if (key != m_lockedKey) {
-        ++m_skippedRows;
-        return std::nullopt;
+    } else if (key != m_lockedKey) {
+        // Not the tracked swap chain. If it keeps presenting while the tracked
+        // one stays silent, the game has moved to it: follow.
+        if (key == m_candidateKey) {
+            ++m_candidateRows;
+        } else {
+            m_candidateKey = key;
+            m_candidateRows = 1;
+        }
+        if (m_candidateRows < kRowsToSwitchSwapChain) {
+            ++m_skippedRows;
+            return std::nullopt;
+        }
+        m_lockedKey = key;
+        ++m_swapChainChanges;
+        m_candidateKey.clear();
+        m_candidateRows = 0;
+        m_pendingGenerated = 0;
+        m_pendingGeneratedMs = 0.0;
+    } else {
+        m_candidateRows = 0; // the tracked swap chain is alive
     }
 
     // With frame generation (and --track_frame_type), generated frames come as

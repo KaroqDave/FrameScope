@@ -46,6 +46,8 @@ std::string describe(const SystemSample& s)
         std::string g = std::format("GPU {:.0f} MHz {:.0f} °C", s.gpu->coreClockMHz, s.gpu->temperatureC);
         if (s.gpu->hotspotC)
             g += std::format(" (hotspot {:.0f} °C)", *s.gpu->hotspotC);
+        if (s.gpu->limitC)
+            g += std::format(" (limit {:.0f} °C)", *s.gpu->limitC);
         g += std::format(" {:.0f} W", s.gpu->powerW);
         if (s.gpu->usagePct)
             g += std::format(" {:.0f}% load", *s.gpu->usagePct);

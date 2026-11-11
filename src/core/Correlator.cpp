@@ -98,7 +98,7 @@ std::string gpuReasonText(std::uint64_t r)
     add(gpu_reason::HwPowerBrake, "power brake");
     add(gpu_reason::HwSlowdown, "HW slowdown");
     add(gpu_reason::ClockDrop, "clock drop under full load");
-    add(gpu_reason::HotspotHigh, "hotspot near limit");
+    add(gpu_reason::HotspotHigh, "temperature near limit");
     return out;
 }
 
@@ -604,9 +604,10 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
                 out.push_back({share > 0.05 ? L::Problem : L::Warning, "GPU throttling", how});
         }
         if (hotspotHigh > 0) {
-            out.push_back({L::Warning, "GPU hotspot near its limit",
-                           std::format("{} samples at or above 105 °C (max {:.0f} °C); check airflow and fan curve",
-                                       hotspotHigh, maxHotspot.value_or(0.0))});
+            out.push_back({L::Warning, "GPU temperature near its limit",
+                           std::format("{} of {} samples close to the point where the GPU slows itself down ({}); check "
+                                       "airflow and fan curve",
+                                       hotspotHigh, gpuSamples, temps)});
         }
 
         if (minRam) {

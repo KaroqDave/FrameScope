@@ -109,7 +109,28 @@ ADLX doesn't report *why* clocks drop, so FrameScope infers it:
 | Flag | When | Counts as a cause |
 |---|---|---|
 | Clock drop under full load | GPU load ≥ 90% and clock < 75% of its usual full-load clock | Yes (GPU throttling, slightly lower confidence than NVIDIA's driver-reported reasons) |
-| Hotspot near limit | Hotspot ≥ 105 °C | No, shown as a finding (check airflow and fan curve) |
+| Temperature near limit | Hotspot ≥ 105 °C | No, shown as a finding (check airflow and fan curve) |
+
+### NVIDIA and AMD side by side
+
+Every check exists for both vendors; only the source differs.
+
+| Check | NVIDIA | AMD |
+|---|---|---|
+| Clock, temperature, power, load | NVML (`nvml.dll` from the driver) | ADLX (`amdadlx64.dll` from the driver) |
+| GPU throttling | Reasons reported by the driver; clock-drop inference on old drivers without them | Clock-drop inference |
+| Temperature near its limit | Within 3 °C of the driver's slowdown threshold | Hotspot ≥ 105 °C |
+| VRAM use of the game | Windows performance counters | same |
+| Shader compiler sampling | `nvgpucomp64.dll` | `amdxc64.dll` |
+| Shader cache writes | `NVIDIA\DXCache`, `GLCache` … | `AMD\DxCache`, `DxcCache` … |
+| Generated frames reported by PresentMon | none so far | AFMF, FSR-FG |
+| Frame generation library loaded by the game | DLSS Frame Generation | FSR Frame Generation |
+
+DLSS Frame Generation (and any other technique PresentMon doesn't report) can't be separated
+from rendered frames. FrameScope then shows **Frame generation library loaded** as a hint that
+FPS and frame times may include generated frames. Intel XeSS-FG is covered the same way.
+
+The NVIDIA side has only been checked against the documentation so far, not on a real card.
 
 On single-CCD CPUs (e.g. 9800X3D, 9850X3D) the CCD check is skipped: there's only one cache.
 
@@ -232,6 +253,24 @@ report its generated frames to PresentMon. Without that, generated frames look l
 frames. Generated frames never count as frames of the game: average FPS, 1% lows and spikes
 always refer to rendered frames.
 
+## FrameScope's own load
+
+A stutter tool must not cause stutter:
+
+- **Off the game's cores:** on CPUs where one CCD has the 3D V-Cache, FrameScope and the
+  PresentMon it starts are pinned to the other CCD.
+- **Cheap trace handling:** no locks or string work per event, 64 MB of trace buffers at most,
+  events are dropped from memory once the spikes around them are explained.
+- **Quiet UI:** nothing is drawn while the window is minimised; findings refresh every 5 s.
+- **Measured:** the finding *FrameScope's own load* shows the CPU cores FrameScope and
+  PresentMon used and whether Windows had to drop trace events. Their CPU time doesn't count
+  as background load.
+- **Tools → Light system trace** turns off CPU sampling and file tracking (the two most
+  frequent event types). Shader compilation is then not detected; everything else stays.
+
+If FrameScope crashes or is killed, PresentMon is ended by Windows and the trace sessions are
+stopped on the way out, or at the latest on the next start.
+
 ## Files it writes
 
 FrameScope is portable. Its only file of its own is **`framescope.ini` next to the exe**
@@ -266,8 +305,9 @@ counters at the end.
   the version lists it in `--help` (in `src/capture/PresentMonCapture.cpp`).
 - The CSV parser reads the columns of all PresentMon versions (2.0–2.3.0, the current default
   and `--v1_metrics`), matching names without regard to case.
-- The parser locks onto the **first swap chain** it sees in the process. Launchers or overlays
-  that present first could get picked by mistake; a smarter pick is planned.
+- The parser tracks one swap chain. When that one falls silent and another keeps presenting
+  (resolution or display mode change, game restart, a launcher that presented first), it
+  follows the new one after 240 frames.
 - Generated frames (`FrameType` other than `Application`) are ignored.
 
 ## Layout
