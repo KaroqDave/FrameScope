@@ -44,7 +44,7 @@ Loaded load(const std::filesystem::path& path)
     Loaded l;
     if (isSessionFile(path)) {
         l.meta = loadSession(path);
-        l.session.restore(l.meta.frames, l.meta.spikes, l.meta.frameGeneration);
+        l.session.restore(l.meta.frames, l.meta.spikes, l.meta.frameGeneration, l.meta.endedInPlay);
         if (const auto n = l.session.refilteredFrames(); n > 0) {
             out(stdout, "{}: older session, {} generated frames folded into their rendered frames ({} -> {} spikes)",
                 path.filename().string(), n, l.session.spikesBeforeRefilter(), l.session.spikes().size());

@@ -29,6 +29,7 @@ class QTimer;
 namespace framescope::ui {
 
 class FrameTimeView;
+class GlobalHotkey;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -55,6 +56,12 @@ private:
     void stopSystemTrace();
     void pumpTrace(bool final);
     void onFrames(const std::vector<core::FrameRecord>& frames);
+
+    // Global hotkey: starts and stops a capture while the game is in front
+    void onHotkey();
+    void chooseHotkey();
+    void applyHotkey(const QKeySequence& sequence, bool save);
+    void hotkeyTone(int tone);
 
     // Idle baseline
     void startBaseline();
@@ -117,6 +124,12 @@ private:
     qint64 m_lastSpikeTableRebuild = 0;
     bool m_spikeTableStale = false;
     QAction* m_lightTraceAction = nullptr;
+
+    GlobalHotkey* m_hotkey = nullptr;
+    QAction* m_hotkeyAction = nullptr;
+    bool m_hotkeySound = true;
+    bool m_startedByHotkey = false; // no dialogs then: the game covers them
+    bool m_stoppedByHotkey = false;
 
     mutable core::DisplayAnalysis m_displayCache;
     mutable std::size_t m_displayCacheFrames = 0;

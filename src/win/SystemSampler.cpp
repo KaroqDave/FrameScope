@@ -484,6 +484,14 @@ std::uint32_t currentProcessId()
     return GetCurrentProcessId();
 }
 
+std::uint32_t foregroundProcessId()
+{
+    DWORD pid = 0;
+    if (const HWND window = GetForegroundWindow(); window && GetWindowThreadProcessId(window, &pid))
+        return pid;
+    return 0;
+}
+
 bool keepOffCcd(const core::CpuTopology& topology, int ccdToAvoid, std::uint32_t childPid)
 {
     if (topology.ccdCount() < 2 || ccdToAvoid < 0)
@@ -560,6 +568,7 @@ bool isElevated() { return false; }
 void deleteLegacyRegistrySettings() {}
 double processCpuSeconds(std::uint32_t) { return -1.0; }
 std::uint32_t currentProcessId() { return 0; }
+std::uint32_t foregroundProcessId() { return 0; }
 bool keepOffVCacheCores(const core::CpuTopology&) { return false; }
 bool keepOffCcd(const core::CpuTopology&, int, std::uint32_t) { return false; }
 void tieToThisProcess(std::uint32_t) {}

@@ -1947,6 +1947,57 @@ void leadUpToFocusLoss()
     CHECK(markSlowdownAtCaptureEnd(end, 59.6) == 0 && markLeadUpToFocusLoss(end) == 0);
 }
 
+// Stopped with the global hotkey: the game ran on, so spikes right before the
+// end count. The session file remembers it.
+void captureEndedInPlay()
+{
+    std::vector<FrameRecord> frames(600, frame(10.0, 9.0, 5.0));
+    frames[590].frameTimeMs = 60.0;
+    frames[595].frameTimeMs = 70.0;
+    double t = 0.0;
+    for (auto& f : frames) {
+        t += f.frameTimeMs / 1000.0;
+        f.timeSeconds = t;
+    }
+    const auto build = [&](bool inPlay) {
+        std::vector<Spike> spikes;
+        SpikeDetector detector;
+        for (const auto& f : frames) {
+            if (auto sp = detector.push(f)) {
+                sp->attribution = Attribution{Cause::GameCpu, Side::Game, 0.7, {}, {}};
+                spikes.push_back(*sp);
+            }
+        }
+        CaptureSession cs;
+        cs.restore(frames, spikes, {}, inPlay);
+        return cs;
+    };
+    const auto left = build(false);
+    CHECK(left.spikes().size() == 2 && left.spikes()[1].attribution->cause == Cause::NotInForeground);
+    CHECK(left.diagnosis().attributed == 0);
+    const auto played = build(true);
+    CHECK(played.endedInPlay() && played.spikes()[0].attribution->cause == Cause::GameCpu);
+    CHECK(played.diagnosis().attributed == 2);
+
+    SavedSession s;
+    s.application = "game.exe";
+    s.frames = played.frames();
+    s.spikes = played.spikes();
+    s.endedInPlay = true;
+    const auto path = std::filesystem::temp_directory_path() / "framescope_inplay.fscope";
+    saveSession(path, s);
+    const auto r = loadSession(path);
+    CHECK(r.endedInPlay);
+    s.endedInPlay = false;
+    saveSession(path, s);
+    CHECK(!loadSession(path).endedInPlay);
+    std::filesystem::remove(path);
+
+    CaptureSession cleared = played;
+    cleared.clear();
+    CHECK(!cleared.endedInPlay());
+}
+
 int main()
 {
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
@@ -2003,6 +2054,7 @@ int main()
         {"overheadAndFrameGenLibraries", overheadAndFrameGenLibraries},
         {"timelinePruneEvents", timelinePruneEvents},
         {"leadUpToFocusLoss", leadUpToFocusLoss},
+        {"captureEndedInPlay", captureEndedInPlay},
         {"nvidiaTemperatureLimit", nvidiaTemperatureLimit},
         {"parserFollowsNewSwapChain", parserFollowsNewSwapChain},
         {"frameGenerationPattern", frameGenerationPattern},

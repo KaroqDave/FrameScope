@@ -28,6 +28,7 @@ void CaptureSession::clear()
     m_frames.clear();
     m_spikes.clear();
     m_frameGeneration.clear();
+    m_endedInPlay = false;
     m_refilteredFrames = 0;
     m_spikesBeforeRefilter = 0;
 }
@@ -143,13 +144,15 @@ std::size_t CaptureSession::closeOut()
 {
     if (m_frames.empty())
         return 0;
-    return markLeadUpToFocusLoss(m_spikes) + markSlowdownAtCaptureEnd(m_spikes, m_frames.back().timeSeconds)
-           + markLoading(m_spikes);
+    const auto atEnd = m_endedInPlay ? 0 : markSlowdownAtCaptureEnd(m_spikes, m_frames.back().timeSeconds);
+    return markLeadUpToFocusLoss(m_spikes) + atEnd + markLoading(m_spikes);
 }
 
-void CaptureSession::restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes, std::string frameGeneration)
+void CaptureSession::restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes, std::string frameGeneration,
+                             bool endedInPlay)
 {
     m_detector.reset();
+    m_endedInPlay = endedInPlay;
     m_refilteredFrames = 0;
     m_spikesBeforeRefilter = spikes.size();
 

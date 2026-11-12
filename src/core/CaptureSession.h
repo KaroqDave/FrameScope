@@ -52,7 +52,8 @@ public:
     // If it folds any, spikes are detected anew and take over the cause of the
     // saved spike in the same frame. frameGeneration is the name stored with
     // the session; when empty, the detected pattern names it.
-    void restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes, std::string frameGeneration = {});
+    void restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes, std::string frameGeneration = {},
+                 bool endedInPlay = false);
 
     // Generated frames the last restore() folded into their rendered frames
     // (0 = the saved session was used as it is), and the spikes it had before.
@@ -73,7 +74,14 @@ public:
     std::size_t attributePending(const EventTimeline& timeline, double settleMs = 1500.0,
                                  const CorrelatorConfig& cfg = {});
 
-    // The capture has ended: applies the two rules above. Returns the spikes changed.
+    // The capture was stopped with the global hotkey while the game kept
+    // running in front: nobody paused or left the game to stop it, so a
+    // slowdown right at the end is stutter like any other.
+    void setEndedInPlay(bool on) noexcept { m_endedInPlay = on; }
+    [[nodiscard]] bool endedInPlay() const noexcept { return m_endedInPlay; }
+
+    // The capture has ended: applies the rules above (the one about the
+    // capture's end only if it didn't end in play). Returns the spikes changed.
     std::size_t closeOut();
 
     [[nodiscard]] Diagnosis diagnosis() const { return diagnose(m_spikes); }
@@ -83,6 +91,7 @@ private:
     std::vector<FrameRecord> m_frames;
     std::vector<Spike> m_spikes;
     std::string m_frameGeneration;
+    bool m_endedInPlay = false;
     std::size_t m_refilteredFrames = 0;
     std::size_t m_spikesBeforeRefilter = 0;
 };

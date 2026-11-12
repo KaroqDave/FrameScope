@@ -56,6 +56,9 @@ bool isElevated();
 double processCpuSeconds(std::uint32_t pid);
 std::uint32_t currentProcessId();
 
+// The process whose window is in front right now; 0 if unknown.
+std::uint32_t foregroundProcessId();
+
 // On CPUs where only one CCD has 3D V-Cache, games run on that CCD. This keeps
 // FrameScope (and the PresentMon it starts) on the other cores, out of the
 // game's way. Returns false (and changes nothing) on other CPUs.
