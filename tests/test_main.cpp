@@ -272,7 +272,8 @@ void statsLeaveOutLoading()
     CHECK(!leftOut[300] && !leftOut[899] && !leftOut[903]);
 
     const auto s = computeStats(frames, spikes);
-    CHECK(s.leftOutFrames == 4 && s.frames == 2000 && s.spikes == 4);
+    CHECK(s.leftOutFrames == 4 && s.frames == 2000 && s.spikes == 1 && s.leftOutSpikes == 3);
+    CHECK(near(s.spikesPerMinute, 60.0 / s.durationSeconds));
     CHECK(near(s.worstFrameMs, 40.0));
     CHECK(near(s.onePercentLowFps, 100.0));
     CHECK(near(s.durationSeconds, frames.back().timeSeconds)); // the capture's real length
@@ -281,7 +282,7 @@ void statsLeaveOutLoading()
     for (auto& sp : spikes)
         sp.attribution.reset();
     const auto plain = computeStats(frames, spikes);
-    CHECK(plain.leftOutFrames == 0 && near(plain.worstFrameMs, 2500.0));
+    CHECK(plain.leftOutFrames == 0 && near(plain.worstFrameMs, 2500.0) && plain.spikes == 4 && plain.leftOutSpikes == 0);
 
     // Frames between two left-out spikes far apart stay in.
     std::vector<Spike> apart{spikeAt(900, Cause::Loading), spikeAt(1500, Cause::NotInForeground)};
@@ -294,6 +295,9 @@ void statsLeaveOutLoading()
     const std::vector<Spike> two{spikeAt(300, Cause::GameCpu), spikeAt(900, Cause::Loading)};
     d.spikes = two;
     CHECK(renderHtmlReport(d).contains("Worst frame (in play)"));
+    CHECK(renderHtmlReport(d).contains("Spikes (1 more not counted)"));
+    d.spikes = std::span{two}.last(1);
+    CHECK(renderHtmlReport(d).contains("No stutter in play. 1 spikes during loading"));
     d.spikes = std::span{two}.first(1);
     CHECK(!renderHtmlReport(d).contains("(in play)"));
 }

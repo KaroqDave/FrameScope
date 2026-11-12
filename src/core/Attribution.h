@@ -42,6 +42,14 @@ constexpr bool countsForVerdict(Cause c) noexcept
            && c != Cause::SettingsChange;
 }
 
+// Spikes that didn't happen in play at all: loading, a settings change, the
+// game not in front. They are left out of the spike count and the frame
+// statistics too. (A spike without trace data is still a spike in play.)
+constexpr bool leftOutOfPlay(Cause c) noexcept
+{
+    return c == Cause::NotInForeground || c == Cause::Loading || c == Cause::SettingsChange;
+}
+
 std::string_view toString(Side s) noexcept;
 std::string_view toString(Cause c) noexcept;
 

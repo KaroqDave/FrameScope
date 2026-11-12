@@ -219,6 +219,9 @@ std::string renderHtmlReport(const ReportData& d)
                                      : 2 * diag.game >= diag.attributed   ? "game"
                                                                           : "mixed";
     const std::string verdict = d.spikes.empty()            ? "No stutter detected."
+                                : stats.spikes == 0         ? std::format("No stutter in play. {} spikes during loading, settings "
+                                                                          "changes or outside the game are not counted.",
+                                                                          stats.leftOutSpikes)
                                 : diag.attributed == 0      ? std::format("{} spikes, no system trace (causes unknown).", d.spikes.size())
                                                             : diag.verdict;
     h += std::format(R"(<div class="verdict {}">{}</div>)", verdictClass, htmlEscape(verdict));
@@ -234,7 +237,8 @@ std::string renderHtmlReport(const ReportData& d)
     const bool inPlay = stats.leftOutFrames > 0;
     h += stat(inPlay ? "1% low FPS (in play)" : "1% low FPS", std::format("{:.0f}", stats.onePercentLowFps));
     h += stat(inPlay ? "Worst frame (in play)" : "Worst frame", std::format("{:.0f} ms", stats.worstFrameMs));
-    h += stat("Spikes", std::format("{}", stats.spikes));
+    h += stat(stats.leftOutSpikes > 0 ? std::format("Spikes ({} more not counted)", stats.leftOutSpikes) : "Spikes",
+              std::format("{}", stats.spikes));
     h += stat("Spikes per minute", std::format("{:.1f}", stats.spikesPerMinute));
     h += stat("Duration", std::format("{:.0f} s", stats.durationSeconds));
     h += "</div>";
