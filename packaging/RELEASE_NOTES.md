@@ -1,6 +1,10 @@
-**Beta.** The analysis has been checked on a handful of real captures, all on AMD hardware.
-The NVIDIA side, frame generation and shader-compile detection still need confirmation on real
-systems. Bug reports with **Tools → Save diagnostics** attached are very welcome.
+**Beta.** The analysis has been checked on real captures from one AMD system (Ryzen 9950X3D,
+Radeon RX 9070 XT), including shader compilation and FSR Frame Generation. The NVIDIA side
+(sensors, DLSS Frame Generation) still needs confirmation on real hardware. Bug reports with
+**Tools → Save diagnostics** attached are very welcome.
+
+What is confirmed, what changed and what comes next:
+https://github.com/KaroqDave/FrameScope/blob/main/docs/STATUS.md
 
 ### Which download?
 

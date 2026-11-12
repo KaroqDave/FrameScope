@@ -13,10 +13,11 @@ programs, shader compilation. Every spike gets a likely cause, and the session g
 - Portable: unzip and run. One settings file next to the exe, nothing else.
 - Windows 10/11, x64. NVIDIA and AMD graphics cards.
 
-> **Beta.** The analysis has been checked on a handful of real captures, all on AMD hardware.
-> The NVIDIA side, frame generation and shader-compile detection are built from documentation
-> and simulated data and still need confirmation on real systems. Reports with
-> **Tools → Save diagnostics** attached are very welcome.
+> **Beta.** The analysis has been checked on real captures from one AMD system (Ryzen 9950X3D,
+> Radeon RX 9070 XT), including shader compilation and FSR Frame Generation. The NVIDIA side
+> (sensors, DLSS Frame Generation) is built from documentation and simulated data and still
+> needs confirmation. What is confirmed and what comes next: [docs/STATUS.md](docs/STATUS.md).
+> Reports with **Tools → Save diagnostics** attached are very welcome.
 
 ## Download
 
@@ -46,9 +47,11 @@ Each spike gets its cause about 4 seconds after it happens.
 ## Reading the results
 
 **Verdict:** one line, e.g. *Mostly the game: 86% of spikes. Top cause: Shader compilation.*
+Loading screens and the moments around leaving the game are not counted; a finding says how
+many spikes were left out and why.
 
 **Graph:** frame times with a dot per spike. Red = your system, violet = the game, amber =
-could be either, white = not explained (yet). Mouse wheel zooms, drag pans, double-click
+could be either, white = not explained (yet) or not counted. Mouse wheel zooms, drag pans, double-click
 follows live.
 
 **Spike table:** one row per spike with side, cause, confidence and the evidence. Hover a row
@@ -89,7 +92,8 @@ evidence, not proof.
 | Sessions | File → Save / Open session | `.fscope` files with frames, spikes, causes and findings |
 | Report | File → Export report | One self-contained HTML file to keep or share |
 | Run comparison | Tools → Compare with earlier run | Two runs of the same scene: fewer spikes on run 2 means shader compilation, spikes at the same moments mean game content, random spikes point to the system |
-| Frame generation | automatic | AFMF, FSR-FG, XeSS-FG and DLSS-FG are recognised; spikes and FPS always describe the frames the game rendered, with FPS on screen shown separately |
+| Frame generation | automatic | AFMF, FSR-FG, XeSS-FG and DLSS-FG are recognised, also when switched on or off during a capture; spikes and FPS always describe the frames the game rendered, with FPS on screen shown separately |
+| Loading and focus | automatic | Loading screens, alt-tabbing and closing the game are recognised and left out of the verdict |
 | Display pacing | automatic | Hitches on screen that the game's frame times don't show |
 | Light system trace | Tools menu | Less overhead; shader compilation is then not detected |
 | Diagnostics | Tools → Save diagnostics | One text file with everything needed to debug a capture |
@@ -161,6 +165,7 @@ The analysis core is plain C++ and also builds on Linux, which is what the tests
 capture side is Windows only.
 
 How the detection works, with all thresholds: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
+Project status and to-do list: [docs/STATUS.md](docs/STATUS.md).
 
 ## License
 

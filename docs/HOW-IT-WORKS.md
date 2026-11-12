@@ -53,12 +53,16 @@ plus 1 ms before it.
 
 Confidence grows with the share of the excess that the evidence explains.
 
+"Not counted" spikes stay in the spike table but are left out of the verdict, the percentages
+and the stutter pattern. Average FPS, 1% low and worst frame still include those frames.
+
 ## Session checks (Findings)
 
 Driver latency (good below 0.5 ms, warning below 2 ms, problem above), V-Cache CCD share (good
 from 80%), background load (good below 1 core, problem from 3), GPU throttling, temperature
 near its limit, free RAM, VRAM, CPU limits, shader compilation, stutter pattern (bursts vs.
-evenly spread, in 30 s bins), display pacing, frame generation, FrameScope's own load.
+evenly spread, in 30 s bins), display pacing, frame generation, FrameScope's own load, and how
+many spikes were left out of the verdict (loading, game not in front).
 
 Each check is linked to the spikes with the matching cause. A problem linked to no spike is
 shown as a warning; a warning linked to at least 10% of the spikes (and at least 3) becomes a
@@ -72,8 +76,13 @@ problem.
 | NVIDIA DLSS-FG / Multi Frame Generation, AMD FSR-FG when the game doesn't report it, anything unlabelled | Present pattern: groups of one long gap and 1–5 gaps near zero (below 30% of the average gap and below 4 ms), at least 8 groups in a window of 96 presents, 80% of them the same size, and the near-zero frames must reach the screen. If the generated frames are spaced evenly instead (seen with FSR-FG): presents with exactly 0 CPU and GPU work alternating with presents whose CPU work spans the whole group, same group rules |
 | Neither found | If the game has a frame generation library loaded, a finding says so |
 
-The pattern was confirmed on a real FSR Frame Generation capture (gaps of ~19 ms and ~0.1 ms
-alternating, each frame shown for ~9.7 ms): 6,900 false spikes without the detector, 69 with it.
+Both patterns were confirmed on real FSR Frame Generation captures. Near-zero gaps: ~19 ms and
+~0.1 ms alternating, each frame shown for ~9.7 ms; 6,900 false spikes without the detector, 69
+with it. Even spacing: ~9 ms gaps throughout, every other present with 0 ms of work and the next
+one with ~18 ms. FSR-FG switched between the two within one capture.
+
+The filter looks 96 presents ahead, so frames reach the analysis with that delay (about a
+second).
 
 Generated frames are folded into the rendered frame they belong to. PresentMon reports the
 group's CPU and GPU work on either row, so the merged frame takes the larger values. Spikes, average FPS and 1%
@@ -103,6 +112,7 @@ src/capture/   PresentMon process wrapper (Qt)
 src/ui/        main window, frame-time graph, settings
 src/cli/       framescope-cli, framescope-latency
 tests/         unit tests without dependencies (ctest)
+docs/          this file, STATUS.md (what is confirmed, to-do list), screenshots
 packaging/     release notes, third-party notices, AMD EULA
 ```
 
