@@ -56,8 +56,9 @@ Confidence grows with the share of the excess that the evidence explains.
 
 "Not counted" spikes stay in the spike table but are left out of the verdict, the percentages
 and the stutter pattern. **1% low** and **worst frame** leave out their frames too, along with
-the frames between two such spikes at most 0.25 s apart (the same loading screen). Duration,
-average FPS and the spike count still cover the whole capture.
+the frames between two such spikes at most 0.25 s apart (the same loading screen). The spike
+count and spikes per minute show the spikes in play, with the number not counted next to them.
+Duration and average FPS still cover the whole capture.
 
 A capture stopped with the hotkey while the game was in front ended in play: the rule about
 the slowdown right before the capture's end is skipped, and the session file notes it

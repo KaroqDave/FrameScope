@@ -1,6 +1,6 @@
 # Status and next steps
 
-Last updated: 12 November 2026, with **v0.1.0-beta.16**.
+Last updated: 12 November 2026, with **v0.1.0-beta.17**.
 
 FrameScope is in beta. Everything below "confirmed" has been seen working on real captures;
 everything else is built from documentation and simulated data.
@@ -35,7 +35,7 @@ CPPC set to "Driver". Games: Helldivers 2 and Control Resonant.
 
 | Version | What changed |
 |---|---|
-| Next beta (not released yet) | New cause **Settings or scene change**: a burst of spikes after which the frame rate stays at a different level (changing graphics settings, a menu) is left out of the verdict |
+| beta.17 | New cause **Settings or scene change**: a burst of spikes after which the frame rate stays at a different level (changing graphics settings, a menu) is left out of the verdict. The spike count and spikes per minute show the spikes in play; those not counted are shown next to them |
 | beta.16 | **1% low** and **Worst frame** leave out loading screens and frames while the game wasn't in front. Opening a session saved before beta.14 runs the frame generation filter again, so its false spikes are gone. Global hotkey (Ctrl+Shift+F10, changeable) starts and stops a capture from inside the game |
 | beta.15 | New cause **Loading**: loading screens and level changes are left out of the verdict. New finding that sums up what was left out and why |
 | beta.14 | Frame generation with evenly spaced frames is recognised (no more flood of false spikes when FSR-FG changes its pacing). The slowdown right before alt-tabbing, closing the game or stopping the capture is left out |

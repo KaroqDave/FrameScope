@@ -42,6 +42,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <exception>
 #include <map>
 
@@ -1129,7 +1130,7 @@ void MainWindow::saveDiagnostics()
 
     section(tr("Session"));
     const auto st = m_session.stats();
-    o << st.frames << " frames, " << st.durationSeconds << " s, avg " << st.averageFps << " fps, " << st.spikes << " spikes\n";
+    o << st.frames << " frames, " << st.durationSeconds << " s, avg " << st.averageFps << " fps, " << st.spikes << " spikes in play, " << st.leftOutSpikes << " not counted\n";
     std::map<std::string, int> causes;
     int pending = 0;
     for (const auto& sp : m_session.spikes()) {
@@ -1319,6 +1320,14 @@ void MainWindow::updateVerdict()
         return;
     }
     const auto d = m_session.diagnosis();
+    const auto leftOut = std::ranges::count_if(m_session.spikes(), [](const core::Spike& s) {
+        return s.attribution && core::leftOutOfPlay(s.attribution->cause);
+    });
+    if (static_cast<std::size_t>(leftOut) == m_session.spikes().size()) {
+        m_verdictLabel->setText(tr("No stutter in play. %1 spikes during loading, settings changes or outside the "
+                                   "game are not counted.").arg(leftOut));
+        return;
+    }
     if (d.attributed == 0) {
         m_verdictLabel->setText(m_trace.isRunning()
                                     ? tr("%1 spikes, waiting for system trace data …").arg(m_session.spikes().size())
@@ -1372,12 +1381,14 @@ void MainWindow::refresh()
                     .arg(s.worstFrameMs, 0, 'f', 1)
                     .arg(s.spikes)
                     .arg(s.spikesPerMinute, 0, 'f', 1);
+    if (s.leftOutSpikes > 0)
+        text += tr(" · %1 more not counted").arg(s.leftOutSpikes);
     if (const auto& d = displayAnalysis(); d.available && d.generatedShare() >= 0.05)
         text += tr(" · %1 fps on screen with frame generation").arg(d.displayedFps, 0, 'f', 0);
     m_statsLabel->setText(text);
     m_statsLabel->setToolTip(s.leftOutFrames > 0
-                                 ? tr("1% low and worst frame leave out %1 frames during loading, settings changes or "
-                                      "while the game wasn't in front").arg(s.leftOutFrames)
+                                 ? tr("Spikes during loading, settings changes or while the game wasn't in front are "
+                                      "not counted; 1% low and worst frame leave out those %1 frames").arg(s.leftOutFrames)
                                  : QString{});
 }
 

@@ -18,8 +18,11 @@ struct SessionStats {
     double onePercentLowFps = 0.0; // 1000 / 99th-percentile frame time
     double worstFrameMs = 0.0;
     std::size_t leftOutFrames = 0; // frames not counted for the two above
+    // Spikes in play. Those during loading, a settings change or while the
+    // game wasn't in front are counted separately.
     std::size_t spikes = 0;
-    double spikesPerMinute = 0.0;
+    std::size_t leftOutSpikes = 0;
+    double spikesPerMinute = 0.0; // spikes in play per minute of the whole capture
 };
 
 // Which frames belong to a spike that is left out of the verdict because the

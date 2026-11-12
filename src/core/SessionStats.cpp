@@ -11,10 +11,7 @@ std::vector<bool> leftOutFrames(std::span<const FrameRecord> frames, std::span<c
     std::vector<bool> out(frames.size(), false);
     const Spike* previous = nullptr; // the last left-out spike, if no counted spike came after it
     for (const auto& s : spikes) {
-        const bool leftOut = s.attribution && s.frameIndex < frames.size()
-                             && (s.attribution->cause == Cause::Loading
-                                 || s.attribution->cause == Cause::SettingsChange
-                                 || s.attribution->cause == Cause::NotInForeground);
+        const bool leftOut = s.attribution && s.frameIndex < frames.size() && leftOutOfPlay(s.attribution->cause);
         if (!leftOut) {
             previous = nullptr;
             continue;
@@ -32,10 +29,13 @@ std::vector<bool> leftOutFrames(std::span<const FrameRecord> frames, std::span<c
 
 SessionStats computeStats(std::span<const FrameRecord> frames, std::span<const Spike> spikes)
 {
-    const std::size_t spikeCount = spikes.size();
+    const auto leftOutSpikes = static_cast<std::size_t>(std::ranges::count_if(
+        spikes, [](const Spike& sp) { return sp.attribution && leftOutOfPlay(sp.attribution->cause); }));
+    const std::size_t spikeCount = spikes.size() - leftOutSpikes;
     SessionStats s;
     s.frames = frames.size();
     s.spikes = spikeCount;
+    s.leftOutSpikes = leftOutSpikes;
     if (frames.empty())
         return s;
 
