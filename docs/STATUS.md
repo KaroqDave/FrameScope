@@ -1,6 +1,6 @@
 # Status and next steps
 
-Last updated: 12 November 2026, with **v0.1.0-beta.15**.
+Last updated: 12 November 2026, with **v0.1.0-beta.16**.
 
 FrameScope is in beta. Everything below "confirmed" has been seen working on real captures;
 everything else is built from documentation and simulated data.
@@ -31,7 +31,7 @@ CPPC set to "Driver". Games: Helldivers 2 and Control Resonant.
 
 | Version | What changed |
 |---|---|
-| Next beta (not released yet) | **1% low** and **Worst frame** leave out loading screens and frames while the game wasn't in front. Opening a session saved before beta.14 runs the frame generation filter again, so its false spikes are gone. Global hotkey (Ctrl+Shift+F10, changeable) starts and stops a capture from inside the game |
+| beta.16 | **1% low** and **Worst frame** leave out loading screens and frames while the game wasn't in front. Opening a session saved before beta.14 runs the frame generation filter again, so its false spikes are gone. Global hotkey (Ctrl+Shift+F10, changeable) starts and stops a capture from inside the game. The hotkey has not been run on Windows before this release |
 | beta.15 | New cause **Loading**: loading screens and level changes are left out of the verdict. New finding that sums up what was left out and why |
 | beta.14 | Frame generation with evenly spaced frames is recognised (no more flood of false spikes when FSR-FG changes its pacing). The slowdown right before alt-tabbing, closing the game or stopping the capture is left out |
 | beta.13 | Spikes while the game isn't in the foreground are left out. FrameScope moves off the CCD the game really runs on |
@@ -48,7 +48,7 @@ Older versions: see the [Releases](https://github.com/KaroqDave/FrameScope/relea
 | 1 | Try the hotkey on Windows | Written without a Windows PC: check that it fires inside Helldivers 2 and Control Resonant (borderless and exclusive fullscreen), that the tones play, and that the key dialog works |
 | 2 | Check why PresentMon's CPU load reads 0.00 | Either it really is that low or its process time isn't measured |
 | 3 | Replace the demo screenshots with real captures | README and report screenshots still show generated data |
-| 4 | Check the other two changes of the next beta on the real captures | Both are tested with simulated data only: the header numbers of the Control Resonant sessions, and a session saved before beta.14 |
+| 4 | Check the other two changes of beta.16 on the real captures | Both are tested with simulated data only: the header numbers of the Control Resonant sessions, and a session saved before beta.14 |
 
 ### Before stable v0.1.0
 
