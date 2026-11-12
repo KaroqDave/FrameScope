@@ -21,6 +21,8 @@ CPPC set to "Driver". Games: Helldivers 2 and Control Resonant.
 | Loading screens left out | Confirmed | 1.4 s to 9.4 s stalls in Control Resonant; no false hits in Helldivers 2 |
 | Leaving or closing the game left out | Confirmed | 26 and 34 spikes at the end of two captures |
 | FrameScope's own load | Confirmed | 0.02 to 0.04 CPU cores, kept off the game's CCD |
+| 1% low and worst frame without loading | Confirmed | Control Resonant sessions (beta.16) |
+| Frame generation refiltered in older sessions | Confirmed | A session saved before beta.14 (beta.16) |
 | Capture hotkey | Confirmed | Starts and stops a capture from inside the game (beta.16) |
 | NVIDIA sensors (NVML), `nvgpucomp64.dll` sampling | **Not tested** | No NVIDIA hardware available |
 | DLSS Frame Generation / Multi Frame Generation | **Not tested** | Same detector as FSR-FG, only simulated for 3x and 4x |
@@ -48,7 +50,6 @@ Older versions: see the [Releases](https://github.com/KaroqDave/FrameScope/relea
 |---|---|---|
 | 1 | Check why PresentMon's CPU load reads 0.00 | Either it really is that low or its process time isn't measured |
 | 2 | Replace the demo screenshots with real captures | README and report screenshots still show generated data |
-| 3 | Check the other two changes of beta.16 on the real captures | Both are tested with simulated data only: the header numbers of the Control Resonant sessions, and a session saved before beta.14 |
 
 ### Before stable v0.1.0
 
