@@ -39,6 +39,7 @@ std::string_view toString(Cause c) noexcept
     case Cause::ShaderCompile:   return "Shader compilation";
     case Cause::NotInForeground: return "Game not in foreground";
     case Cause::Loading: return "Loading";
+    case Cause::SettingsChange: return "Settings or scene change";
     }
     return "?";
 }
@@ -655,7 +656,7 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
 
 std::vector<Finding> leftOutFindings(std::span<const Spike> spikes)
 {
-    std::size_t loading = 0, notInFront = 0;
+    std::size_t loading = 0, notInFront = 0, settings = 0;
     double loadingS = 0.0;
     for (const auto& s : spikes) {
         if (!s.attribution)
@@ -665,19 +666,24 @@ std::vector<Finding> leftOutFindings(std::span<const Spike> spikes)
             loadingS += s.frameTimeMs / 1000.0;
         } else if (s.attribution->cause == Cause::NotInForeground) {
             ++notInFront;
+        } else if (s.attribution->cause == Cause::SettingsChange) {
+            ++settings;
         }
     }
-    if (loading + notInFront == 0)
+    if (loading + notInFront + settings == 0)
         return {};
     std::string detail;
+    const auto add = [&](std::string part) { detail += (detail.empty() ? "" : "; ") + part; };
     if (loading > 0)
-        detail = std::format("{} during loading (~{:.0f} s in which the game all but stopped presenting)", loading,
-                             loadingS);
+        add(std::format("{} during loading (~{:.0f} s in which the game all but stopped presenting)", loading, loadingS));
     if (notInFront > 0)
-        detail += std::format("{}{} while the game wasn't in front or was being left or closed",
-                              detail.empty() ? "" : "; ", notInFront);
+        add(std::format("{} while the game wasn't in front or was being left or closed", notInFront));
+    if (settings > 0)
+        add(std::format("{} while the frame rate moved to a different level for good (graphics settings, a menu)",
+                        settings));
     detail += ". These say nothing about stutter during play";
-    return {Finding{Finding::Level::Info, std::format("{} spikes left out of the verdict", loading + notInFront),
+    return {Finding{Finding::Level::Info,
+                    std::format("{} spikes left out of the verdict", loading + notInFront + settings),
                     std::move(detail)}};
 }
 

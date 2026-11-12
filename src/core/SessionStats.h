@@ -23,7 +23,7 @@ struct SessionStats {
 };
 
 // Which frames belong to a spike that is left out of the verdict because the
-// game was loading or not in the foreground, plus the frames between two such
+// game was loading, changing settings or not in the foreground, plus the frames between two such
 // spikes at most maxGapS apart (the same loading screen). One flag per frame.
 std::vector<bool> leftOutFrames(std::span<const FrameRecord> frames, std::span<const Spike> spikes,
                                 double maxGapS = 0.25);

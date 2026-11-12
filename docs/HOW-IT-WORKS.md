@@ -42,6 +42,7 @@ plus 1 ms before it.
 | 1 | Driver latency | System | A DPC/ISR ≥ 0.5 ms, and either DPC/ISR time ≥ 15% of the excess, or a single one ≥ 2 ms in a stall |
 | 2 | Shader compilation | Game | CPU-side spike with ≥ 5 ms and ≥ 15% of the excess sampled inside a shader compiler DLL on the game's threads; or the game wrote to a shader cache during the frame (up to 250 ms after); or near it (2 s before to 5 s after, lower confidence) |
 | 3 | GPU throttling | System | Throttle reason from the driver (thermal, power brake, hardware slowdown), or a clock below 75% of its usual full-load value at ≥ 90% load |
+| – | Settings or scene change | not counted | Applied after the rules below: a burst of 3 or more spikes, at most 3.5 s apart and 30 s long, after which the frame rate stays at another level. The level is the median frame time of the frames that aren't spikes, up to 5 s before and after the burst (at least 1 s on each side; during a capture the full 5 s after); it must differ by 1.5x or more. Spikes with a system-side cause keep it |
 | 4 | Low memory / Hard page faults | System / Game | The game's threads waited on hard faults for ≥ 20% of the excess. With < 1.5 GB or < 5% RAM free it is low memory, otherwise the game loading data |
 | 5 | VRAM full | Mixed | The game uses ≥ 95% of VRAM (not for CPU-bound spikes) |
 | 6 | Storage wait | Mixed | A disk I/O of the game took ≥ 30% of the excess |

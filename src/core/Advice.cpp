@@ -43,6 +43,9 @@ std::string_view adviceFor(Cause cause) noexcept
         return "Nothing to fix. Spikes while another window is in front are left out of the verdict.";
     case Cause::Loading:
         return "Nothing to fix. Loading screens and level changes are left out of the verdict.";
+    case Cause::SettingsChange:
+        return "Nothing to fix. The frame rate settled at a different level right after, as it does when graphics "
+               "settings change or a menu opens; left out of the verdict.";
     case Cause::NoTraceData:
         return "Capture live with System trace switched on to find the cause.";
     }

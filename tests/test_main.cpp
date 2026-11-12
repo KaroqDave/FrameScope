@@ -1736,7 +1736,7 @@ void frameGenerationPattern()
 void advice()
 {
     // Every cause has advice.
-    for (int c = 0; c <= static_cast<int>(Cause::Loading); ++c)
+    for (int c = 0; c <= static_cast<int>(Cause::SettingsChange); ++c)
         CHECK(!adviceFor(static_cast<Cause>(c)).empty());
     CHECK(adviceFor(Cause::CcdScheduling).find("Game Bar") != std::string_view::npos);
 
@@ -1998,6 +1998,98 @@ void captureEndedInPlay()
     CHECK(!cleared.endedInPlay());
 }
 
+// A burst of spikes after which the frame rate stays at another level is a
+// settings change (or a menu), not stutter. Stutter leaves the level alone.
+void settingsChange()
+{
+    // 10 s at `beforeMs`, a rough second, then 10 s at `afterMs`.
+    const auto run = [](double beforeMs, double afterMs, double tailS = 10.0) {
+        std::vector<FrameRecord> frames;
+        double t = 0.0;
+        const auto add = [&](double ms) {
+            auto f = frame(ms, ms * 0.9, ms * 0.5);
+            t += ms / 1000.0;
+            f.timeSeconds = t;
+            frames.push_back(f);
+        };
+        while (t < 10.0)
+            add(beforeMs);
+        for (int i = 0; i < 12; ++i)
+            add(i % 3 == 0 ? 70.0 : beforeMs);
+        const double tailEnd = t + tailS;
+        while (t < tailEnd)
+            add(afterMs);
+        std::vector<Spike> spikes;
+        SpikeDetector detector;
+        for (const auto& f : frames) {
+            if (auto sp = detector.push(f)) {
+                sp->attribution = Attribution{Cause::GameCpu, Side::Game, 0.7, {}, {}};
+                spikes.push_back(*sp);
+            }
+        }
+        return std::pair{frames, spikes};
+    };
+    const auto marked = [](const std::vector<Spike>& spikes) {
+        return static_cast<std::size_t>(std::ranges::count_if(
+            spikes, [](const Spike& s) { return s.attribution && s.attribution->cause == Cause::SettingsChange; }));
+    };
+
+    {   // 158 fps -> 62 fps: settings changed
+        // (the first slower frames are spikes too, until the median has followed)
+        auto [frames, spikes] = run(6.3, 16.0);
+        const auto n = spikes.size();
+        CHECK(n > 4);
+        CHECK(markSettingsChange(spikes, frames) == n && marked(spikes) == n);
+        CHECK(spikes[0].attribution->detail.contains("from 159 to 62 fps"));
+        CHECK(markSettingsChange(spikes, frames) == 0); // nothing left to change
+        CHECK(diagnose(spikes).attributed == 0);
+        const auto left = leftOutFindings(spikes);
+        CHECK(left.size() == 1 && left[0].title == std::format("{} spikes left out of the verdict", n)
+              && left[0].detail.contains("different level"));
+        CHECK(computeStats(frames, spikes).worstFrameMs < 20.0);
+    }
+    {   // And back up: 62 fps -> 158 fps
+        auto [frames, spikes] = run(16.0, 6.3);
+        CHECK(markSettingsChange(spikes, frames) == spikes.size() && !spikes.empty());
+    }
+    {   // Same level before and after: stutter, it counts
+        auto [frames, spikes] = run(10.0, 10.0);
+        CHECK(spikes.size() == 4 && markSettingsChange(spikes, frames) == 0);
+        auto [frames2, spikes2] = run(10.0, 13.0); // 30% slower: not a different level yet
+        CHECK(markSettingsChange(spikes2, frames2) == 0);
+    }
+    {   // A system-side cause stands; fewer than three spikes are no burst
+        auto [frames, spikes] = run(6.3, 16.0);
+        spikes[1].attribution = Attribution{Cause::DriverLatency, Side::System, 0.9, {}, "x.sys"};
+        CHECK(markSettingsChange(spikes, frames) == spikes.size() - 1
+              && spikes[1].attribution->cause == Cause::DriverLatency);
+        auto [frames2, spikes2] = run(6.3, 16.0);
+        spikes2.resize(2);
+        CHECK(markSettingsChange(spikes2, frames2) == 0);
+    }
+    {   // Too little after the burst to know the new level; during a capture the whole window is needed
+        auto [frames, spikes] = run(6.3, 16.0, 0.5);
+        CHECK(markSettingsChange(spikes, frames) == 0);
+        auto [frames2, spikes2] = run(6.3, 16.0, 3.0);
+        CHECK(markSettingsChange(spikes2, frames2, false) == 0);
+        CHECK(markSettingsChange(spikes2, frames2, true) == spikes2.size());
+    }
+    {   // Opening a saved session applies it; the cause survives saving
+        auto [frames, spikes] = run(6.3, 16.0);
+        CaptureSession cs;
+        cs.restore(frames, spikes);
+        CHECK(marked(cs.spikes()) == spikes.size());
+        SavedSession s;
+        s.frames = cs.frames();
+        s.spikes = cs.spikes();
+        const auto path = std::filesystem::temp_directory_path() / "framescope_settings.fscope";
+        saveSession(path, s);
+        CHECK(marked(loadSession(path).spikes) == spikes.size());
+        std::filesystem::remove(path);
+    }
+    CHECK(!countsForVerdict(Cause::SettingsChange) && toString(Cause::SettingsChange) == "Settings or scene change");
+}
+
 int main()
 {
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
@@ -2055,6 +2147,7 @@ int main()
         {"timelinePruneEvents", timelinePruneEvents},
         {"leadUpToFocusLoss", leadUpToFocusLoss},
         {"captureEndedInPlay", captureEndedInPlay},
+        {"settingsChange", settingsChange},
         {"nvidiaTemperatureLimit", nvidiaTemperatureLimit},
         {"parserFollowsNewSwapChain", parserFollowsNewSwapChain},
         {"frameGenerationPattern", frameGenerationPattern},

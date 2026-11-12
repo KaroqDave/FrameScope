@@ -23,6 +23,7 @@ CPPC set to "Driver". Games: Helldivers 2 and Control Resonant.
 | FrameScope's own load | Confirmed | 0.02 to 0.04 CPU cores, kept off the game's CCD |
 | 1% low and worst frame without loading | Confirmed | Control Resonant sessions (beta.16) |
 | Frame generation refiltered in older sessions | Confirmed | A session saved before beta.14 (beta.16) |
+| Settings changes left out | Seen once | One Control Resonant capture: both visits to the settings menu (31 and 64 spikes) left out. Thresholds come from that one capture |
 | Capture hotkey | Confirmed | Starts and stops a capture from inside the game (beta.16) |
 | NVIDIA sensors (NVML), `nvgpucomp64.dll` sampling | **Not tested** | No NVIDIA hardware available |
 | DLSS Frame Generation / Multi Frame Generation | **Not tested** | Same detector as FSR-FG, only simulated for 3x and 4x |
@@ -34,6 +35,7 @@ CPPC set to "Driver". Games: Helldivers 2 and Control Resonant.
 
 | Version | What changed |
 |---|---|
+| Next beta (not released yet) | New cause **Settings or scene change**: a burst of spikes after which the frame rate stays at a different level (changing graphics settings, a menu) is left out of the verdict |
 | beta.16 | **1% low** and **Worst frame** leave out loading screens and frames while the game wasn't in front. Opening a session saved before beta.14 runs the frame generation filter again, so its false spikes are gone. Global hotkey (Ctrl+Shift+F10, changeable) starts and stops a capture from inside the game |
 | beta.15 | New cause **Loading**: loading screens and level changes are left out of the verdict. New finding that sums up what was left out and why |
 | beta.14 | Frame generation with evenly spaced frames is recognised (no more flood of false spikes when FSR-FG changes its pacing). The slowdown right before alt-tabbing, closing the game or stopping the capture is left out |

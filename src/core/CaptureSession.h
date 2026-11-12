@@ -38,6 +38,27 @@ std::size_t markSlowdownAtCaptureEnd(std::span<Spike> spikes, double captureEndS
 std::size_t markLoading(std::span<Spike> spikes, double minStalledS = 1.5, double maxGapS = 0.25,
                         double slowFrameMs = 50.0);
 
+// Changing graphics settings (or opening a menu that runs at another frame
+// rate): a burst of at least minSpikes spikes, at most maxGapS apart and
+// maxBurstS long, after which the frame rate stays at a clearly different
+// level than before it. The level is the median frame time of the frames
+// that aren't spikes, up to windowS before and after the burst (at least
+// minWindowS of frames on each side); it must differ by minRatio or more.
+// Ordinary stutter leaves the frame rate where it was. Spikes with a
+// system-side cause keep it. While the capture runs (captureEnded = false)
+// a burst is only judged once the whole window after it has been recorded,
+// so it can't grow any more. Returns how many spikes were changed.
+struct SettingsChangeConfig {
+    std::size_t minSpikes = 3;
+    double maxGapS = 3.5;
+    double maxBurstS = 30.0;
+    double windowS = 5.0;
+    double minWindowS = 1.0;
+    double minRatio = 1.5;
+};
+std::size_t markSettingsChange(std::span<Spike> spikes, std::span<const FrameRecord> frames,
+                               bool captureEnded = true, const SettingsChangeConfig& cfg = {});
+
 class CaptureSession {
 public:
     explicit CaptureSession(SpikeConfig cfg = {});
