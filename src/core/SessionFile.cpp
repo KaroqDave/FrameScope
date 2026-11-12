@@ -221,7 +221,7 @@ SavedSession loadSession(const std::filesystem::path& path)
             sp.timeSeconds = s.frames[sp.frameIndex].timeSeconds;
             sp.frameTimeMs = s.frames[sp.frameIndex].frameTimeMs;
             if (f[3] == "1" && f.size() >= 9) {
-                sp.attribution = Attribution{enumOf<Cause>(f[4], static_cast<int>(Cause::NotInForeground)),
+                sp.attribution = Attribution{enumOf<Cause>(f[4], static_cast<int>(Cause::Loading)),
                                              enumOf<Side>(f[5], static_cast<int>(Side::Mixed)), num(f[6]),
                                              std::string{f[8]}, std::string{f[7]}};
             }

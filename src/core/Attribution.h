@@ -29,6 +29,7 @@ enum class Cause {
     UnexplainedWait, // nobody busy, no system event found (sync? M3 signals)
     ShaderCompile,   // the game wrote to a shader cache during the frame (appended: saved files store the number)
     NotInForeground, // the game window wasn't in front (alt-tab, stopping the capture): says nothing about stutter
+    Loading,         // the game all but stopped presenting for a while (loading screen, level change): not stutter
 };
 
 // Spikes that say something about how the game ran. Spikes without trace
@@ -36,7 +37,7 @@ enum class Cause {
 // the verdict and the statistics about causes.
 constexpr bool countsForVerdict(Cause c) noexcept
 {
-    return c != Cause::NoTraceData && c != Cause::NotInForeground;
+    return c != Cause::NoTraceData && c != Cause::NotInForeground && c != Cause::Loading;
 }
 
 std::string_view toString(Side s) noexcept;

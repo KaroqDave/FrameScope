@@ -37,6 +37,7 @@ plus 1 ms before it.
 
 | # | Cause | Side | Rule |
 |---|---|---|---|
+| – | Loading | not counted | Applied after the rules below: a stretch of slow frames (50 ms or longer) nearly back to back (at most 0.25 s between one ending and the next starting) that together took at least 1.5 s. Small spikes within 0.25 s around it go with it; spikes with a system-side cause keep it |
 | 0 | Game not in foreground | not counted | A sensor sample around the frame saw another window in front. Also: the burst of spikes leading straight into such a spike, and a burst that runs up to the end of the capture (spikes at most 1 s apart, up to 5 s back; spikes with a system-side cause keep it) |
 | 1 | Driver latency | System | A DPC/ISR ≥ 0.5 ms, and either DPC/ISR time ≥ 15% of the excess, or a single one ≥ 2 ms in a stall |
 | 2 | Shader compilation | Game | CPU-side spike with ≥ 5 ms and ≥ 15% of the excess sampled inside a shader compiler DLL on the game's threads; or the game wrote to a shader cache during the frame (up to 250 ms after); or near it (2 s before to 5 s after, lower confidence) |

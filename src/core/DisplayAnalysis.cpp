@@ -132,7 +132,12 @@ void refreshFrameFindings(std::vector<Finding>& findings, std::span<const FrameR
         "Uneven frame pacing on screen",
         "Frame pacing on screen matches the game",
     };
-    std::erase_if(findings, [&](const Finding& f) { return std::ranges::find(recomputed, f.title) != std::end(recomputed); });
+    std::erase_if(findings, [&](const Finding& f) {
+        return std::ranges::find(recomputed, f.title) != std::end(recomputed)
+               || f.title.ends_with("spikes left out of the verdict");
+    });
+    const auto leftOut = leftOutFindings(spikes);
+    findings.insert(findings.end(), leftOut.begin(), leftOut.end());
 
     const auto display = displayFindings(cachedAnalysis ? *cachedAnalysis : analyzeDisplay(frames, spikes), frameGenerationName);
     findings.insert(findings.end(), display.begin(), display.end());

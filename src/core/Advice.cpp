@@ -41,6 +41,8 @@ std::string_view adviceFor(Cause cause) noexcept
                "V-Sync and frame limiters off to rule those out.";
     case Cause::NotInForeground:
         return "Nothing to fix. Spikes while another window is in front are left out of the verdict.";
+    case Cause::Loading:
+        return "Nothing to fix. Loading screens and level changes are left out of the verdict.";
     case Cause::NoTraceData:
         return "Capture live with System trace switched on to find the cause.";
     }

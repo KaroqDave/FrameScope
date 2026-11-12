@@ -162,6 +162,9 @@ std::string impactText(const Finding& finding);
 // When does the stutter happen? Bursts (loading, streaming, shader compiles
 // when entering new areas) vs. evenly spread (something constant). Works
 // without a system trace, e.g. on an opened CSV.
+// What was left out of the verdict and why (loading, game not in front).
+std::vector<Finding> leftOutFindings(std::span<const Spike> spikes);
+
 std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames, std::span<const Spike> spikes,
                                             double binSeconds = 30.0);
 

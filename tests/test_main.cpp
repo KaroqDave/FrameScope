@@ -1610,7 +1610,7 @@ void frameGenerationPattern()
 void advice()
 {
     // Every cause has advice.
-    for (int c = 0; c <= static_cast<int>(Cause::NotInForeground); ++c)
+    for (int c = 0; c <= static_cast<int>(Cause::Loading); ++c)
         CHECK(!adviceFor(static_cast<Cause>(c)).empty());
     CHECK(adviceFor(Cause::CcdScheduling).find("Game Bar") != std::string_view::npos);
 
@@ -1777,6 +1777,34 @@ void leadUpToFocusLoss()
         lng.push_back(at(i * 0.5, i == 19 ? Cause::NotInForeground : Cause::GameCpu, i == 19 ? Side::Unknown : Side::Game));
     CHECK(markLeadUpToFocusLoss(lng) == 10);
     CHECK(markLeadUpToFocusLoss(lng) == 0); // spikes marked here don't start a walk of their own
+
+    // Loading: slow frames back to back for 1.5 s or more; a lone hitch and a
+    // comb of small spikes are not loading.
+    const auto frameAt = [&](double endS, double ms, Cause c = Cause::GameCpu, Side side = Side::Game) {
+        auto s = at(endS, c, side);
+        s.frameTimeMs = ms;
+        return s;
+    };
+    std::vector<Spike> load = {
+        frameAt(5.0, 400),                                    // lone hitch in play
+        frameAt(20.0, 1400), frameAt(20.2, 80), frameAt(20.5, 300), frameAt(20.9, 350),
+        frameAt(21.0, 30),                                    // small spike right behind the stretch
+        frameAt(30.0, 300, Cause::Paging, Side::System), frameAt(30.5, 500), frameAt(31.2, 700), // system cause stands
+    };
+    for (int i = 0; i < 200; ++i)                             // comb of 20 ms spikes, 4 s long
+        load.push_back(frameAt(40.0 + i * 0.02, 20));
+    CHECK(markLoading(load) == 7);
+    CHECK(load[0].attribution->cause == Cause::GameCpu);
+    for (int i = 1; i <= 5; ++i)
+        CHECK(load[i].attribution->cause == Cause::Loading);
+    CHECK(load[1].attribution->detail.contains("2.1 s"));
+    CHECK(load[6].attribution->cause == Cause::Paging && load[7].attribution->cause == Cause::Loading);
+    CHECK(load[9].attribution->cause == Cause::GameCpu && load.back().attribution->cause == Cause::GameCpu);
+    CHECK(markLoading(load) == 0);
+    CHECK(!countsForVerdict(Cause::Loading) && toString(Cause::Loading) == "Loading");
+    const auto left = leftOutFindings(load);
+    CHECK(left.size() == 1 && left[0].title == "7 spikes left out of the verdict" && left[0].detail.contains("7 during loading"));
+    CHECK(leftOutFindings(std::vector<Spike>{frameAt(5.0, 400)}).empty());
 
     // The capture ends in the middle of a slowdown, before any focus loss was seen.
     std::vector<Spike> end = {

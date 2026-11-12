@@ -29,6 +29,15 @@ std::size_t markLeadUpToFocusLoss(std::span<Spike> spikes, double maxGapS = 1.0,
 std::size_t markSlowdownAtCaptureEnd(std::span<Spike> spikes, double captureEndS, double maxGapS = 1.0,
                                      double maxReachS = 5.0);
 
+// Loading screens and level changes: a stretch of slow frames (slowFrameMs or
+// longer) nearly back to back, at most maxGapS between one ending and the next
+// starting, that together took at least minStalledS. Ordinary stutter is a
+// long frame between normal ones; here the game all but stopped presenting.
+// Small spikes within maxGapS around the stretch go with it. Spikes with a
+// system-side cause keep it. Returns how many spikes were changed.
+std::size_t markLoading(std::span<Spike> spikes, double minStalledS = 1.5, double maxGapS = 0.25,
+                        double slowFrameMs = 50.0);
+
 class CaptureSession {
 public:
     explicit CaptureSession(SpikeConfig cfg = {});

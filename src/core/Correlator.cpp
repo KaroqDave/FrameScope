@@ -38,6 +38,7 @@ std::string_view toString(Cause c) noexcept
     case Cause::UnexplainedWait: return "Unexplained wait";
     case Cause::ShaderCompile:   return "Shader compilation";
     case Cause::NotInForeground: return "Game not in foreground";
+    case Cause::Loading: return "Loading";
     }
     return "?";
 }
@@ -652,6 +653,34 @@ std::vector<Finding> sessionFindings(const EventTimeline& tl, const LatencyStats
     return out;
 }
 
+std::vector<Finding> leftOutFindings(std::span<const Spike> spikes)
+{
+    std::size_t loading = 0, notInFront = 0;
+    double loadingS = 0.0;
+    for (const auto& s : spikes) {
+        if (!s.attribution)
+            continue;
+        if (s.attribution->cause == Cause::Loading) {
+            ++loading;
+            loadingS += s.frameTimeMs / 1000.0;
+        } else if (s.attribution->cause == Cause::NotInForeground) {
+            ++notInFront;
+        }
+    }
+    if (loading + notInFront == 0)
+        return {};
+    std::string detail;
+    if (loading > 0)
+        detail = std::format("{} during loading (~{:.0f} s in which the game all but stopped presenting)", loading,
+                             loadingS);
+    if (notInFront > 0)
+        detail += std::format("{}{} while the game wasn't in front or was being left or closed",
+                              detail.empty() ? "" : "; ", notInFront);
+    detail += ". These say nothing about stutter during play";
+    return {Finding{Finding::Level::Info, std::format("{} spikes left out of the verdict", loading + notInFront),
+                    std::move(detail)}};
+}
+
 std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames, std::span<const Spike> spikes,
                                             double binSeconds)
 {
@@ -667,7 +696,7 @@ std::vector<Finding> stutterPatternFindings(std::span<const FrameRecord> frames,
     std::vector<std::size_t> bins(binCount, 0);
     std::size_t counted = 0;
     for (const auto& s : spikes) {
-        if (s.attribution && s.attribution->cause == Cause::NotInForeground)
+        if (s.attribution && !countsForVerdict(s.attribution->cause) && s.attribution->cause != Cause::NoTraceData)
             continue;
         ++counted;
         ++bins[std::min(binCount - 1, static_cast<std::size_t>(s.timeSeconds / binSeconds))];

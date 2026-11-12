@@ -1,5 +1,6 @@
 #include "core/CaptureSession.h"
 
+#include <format>
 #include <string>
 #include <string_view>
 
@@ -45,7 +46,7 @@ std::size_t CaptureSession::attributePending(const EventTimeline& timeline, doub
         ++done;
     }
     if (done > 0)
-        done += markLeadUpToFocusLoss(m_spikes);
+        done += markLeadUpToFocusLoss(m_spikes) + markLoading(m_spikes);
     return done;
 }
 
@@ -95,11 +96,51 @@ std::size_t markSlowdownAtCaptureEnd(std::span<Spike> spikes, double captureEndS
     return walkBack(spikes, spikes.size(), captureEndS, kCaptureEndDetail, maxGapS, maxReachS);
 }
 
+std::size_t markLoading(std::span<Spike> spikes, double minStalledS, double maxGapS, double slowFrameMs)
+{
+    const auto start = [](const Spike& s) { return s.timeSeconds - s.frameTimeMs / 1000.0; };
+    const auto slow = [&](const Spike& s) { return s.frameTimeMs >= slowFrameMs; };
+    std::size_t changed = 0;
+    for (std::size_t first = 0; first < spikes.size(); ++first) {
+        if (!slow(spikes[first]))
+            continue;
+        // A stretch: slow frames (nearly) back to back. Smaller spikes in between don't matter.
+        std::size_t last = first;
+        double stalledS = spikes[first].frameTimeMs / 1000.0;
+        for (std::size_t i = first + 1; i < spikes.size(); ++i) {
+            if (start(spikes[i]) - spikes[last].timeSeconds > maxGapS)
+                break;
+            if (slow(spikes[i])) {
+                last = i;
+                stalledS += spikes[i].frameTimeMs / 1000.0;
+            }
+        }
+        if (stalledS >= minStalledS) {
+            // The stretch, plus the small spikes right around it (the game settling).
+            const double from = start(spikes[first]) - maxGapS, to = spikes[last].timeSeconds + maxGapS;
+            for (auto& s : spikes) {
+                if (s.timeSeconds < from || start(s) > to)
+                    continue;
+                if (!s.attribution || !countsForVerdict(s.attribution->cause) || s.attribution->side == Side::System)
+                    continue; // not attributed yet, already left out, or a system-side cause that stands
+                s.attribution = Attribution{Cause::Loading, Side::Unknown, 0.6,
+                                            std::format("The game all but stopped presenting for {:.1f} s (loading "
+                                                        "screen or level change); not counted", stalledS),
+                                            {}};
+                ++changed;
+            }
+        }
+        first = last;
+    }
+    return changed;
+}
+
 std::size_t CaptureSession::closeOut()
 {
     if (m_frames.empty())
         return 0;
-    return markLeadUpToFocusLoss(m_spikes) + markSlowdownAtCaptureEnd(m_spikes, m_frames.back().timeSeconds);
+    return markLeadUpToFocusLoss(m_spikes) + markSlowdownAtCaptureEnd(m_spikes, m_frames.back().timeSeconds)
+           + markLoading(m_spikes);
 }
 
 void CaptureSession::restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes)

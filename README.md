@@ -73,6 +73,7 @@ linked to and what to do.
 | Shader compilation | Game | Fades as the shader cache fills; returns after driver updates |
 | Game CPU work / Game GPU work | Game | The game's own work; lower the matching settings |
 | Unexplained wait | Unknown | Capture again with the full trace; try without V-Sync or limiters |
+| Loading | not counted | Loading screens and level changes, where the game all but stops presenting for 1.5 s or more, are left out of the verdict |
 | Game not in foreground | not counted | Spikes while another window is in front, and the slowdown right before alt-tabbing, closing the game or stopping the capture, are left out of the verdict |
 
 "Likely cause" means: this is what the system data during that frame points to. It is strong
