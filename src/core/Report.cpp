@@ -199,7 +199,7 @@ std::string stat(std::string_view label, std::string value)
 
 std::string renderHtmlReport(const ReportData& d)
 {
-    const auto stats = computeStats(d.frames, d.spikes.size());
+    const auto stats = computeStats(d.frames, d.spikes);
     const auto diag = diagnose(d.spikes);
 
     std::string h;
@@ -230,8 +230,10 @@ std::string renderHtmlReport(const ReportData& d)
     h += stat(frameGen ? "Average FPS (rendered)" : "Average FPS", std::format("{:.0f}", stats.averageFps));
     if (frameGen)
         h += stat("FPS on screen (frame generation)", std::format("{:.0f}", display.displayedFps));
-    h += stat("1% low FPS", std::format("{:.0f}", stats.onePercentLowFps));
-    h += stat("Worst frame", std::format("{:.0f} ms", stats.worstFrameMs));
+    // Loading and frames while the game wasn't in front are left out of these two.
+    const bool inPlay = stats.leftOutFrames > 0;
+    h += stat(inPlay ? "1% low FPS (in play)" : "1% low FPS", std::format("{:.0f}", stats.onePercentLowFps));
+    h += stat(inPlay ? "Worst frame (in play)" : "Worst frame", std::format("{:.0f} ms", stats.worstFrameMs));
     h += stat("Spikes", std::format("{}", stats.spikes));
     h += stat("Spikes per minute", std::format("{:.1f}", stats.spikesPerMinute));
     h += stat("Duration", std::format("{:.0f} s", stats.durationSeconds));

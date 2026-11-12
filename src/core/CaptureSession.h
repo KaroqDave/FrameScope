@@ -46,7 +46,18 @@ public:
     void clear();
 
     // Replace everything with a saved session (frames + attributed spikes).
-    void restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes);
+    // Sessions saved before frame generation was recognised from the present
+    // pattern still hold the generated frames as frames of their own, and the
+    // false spikes that came with them: the filter runs again over the frames.
+    // If it folds any, spikes are detected anew and take over the cause of the
+    // saved spike in the same frame. frameGeneration is the name stored with
+    // the session; when empty, the detected pattern names it.
+    void restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes, std::string frameGeneration = {});
+
+    // Generated frames the last restore() folded into their rendered frames
+    // (0 = the saved session was used as it is), and the spikes it had before.
+    [[nodiscard]] std::size_t refilteredFrames() const noexcept { return m_refilteredFrames; }
+    [[nodiscard]] std::size_t spikesBeforeRefilter() const noexcept { return m_spikesBeforeRefilter; }
 
     [[nodiscard]] const std::vector<FrameRecord>& frames() const noexcept { return m_frames; }
     [[nodiscard]] const std::vector<Spike>& spikes() const noexcept { return m_spikes; }
@@ -72,6 +83,8 @@ private:
     std::vector<FrameRecord> m_frames;
     std::vector<Spike> m_spikes;
     std::string m_frameGeneration;
+    std::size_t m_refilteredFrames = 0;
+    std::size_t m_spikesBeforeRefilter = 0;
 };
 
 } // namespace framescope::core

@@ -31,6 +31,7 @@ CPPC set to "Driver". Games: Helldivers 2 and Control Resonant.
 
 | Version | What changed |
 |---|---|
+| Next beta (not released yet) | **1% low** and **Worst frame** leave out loading screens and frames while the game wasn't in front. Opening a session saved before beta.14 runs the frame generation filter again, so its false spikes are gone |
 | beta.15 | New cause **Loading**: loading screens and level changes are left out of the verdict. New finding that sums up what was left out and why |
 | beta.14 | Frame generation with evenly spaced frames is recognised (no more flood of false spikes when FSR-FG changes its pacing). The slowdown right before alt-tabbing, closing the game or stopping the capture is left out |
 | beta.13 | Spikes while the game isn't in the foreground are left out. FrameScope moves off the CCD the game really runs on |
@@ -44,21 +45,20 @@ Older versions: see the [Releases](https://github.com/KaroqDave/FrameScope/relea
 
 | # | Task | Why |
 |---|---|---|
-| 1 | Leave loading and not-in-foreground frames out of **Worst frame**, **1% low** and the stutter pattern | The header still shows e.g. a 1.4 s loading frame as the worst frame, although the verdict ignores it |
-| 2 | Re-run the frame generation filter when opening older sessions | Sessions saved before beta.14 keep their false spikes |
-| 3 | Global hotkey for start and stop | No alt-tab needed, so captures end cleanly and the foreground rules have less to guess |
-| 4 | Check why PresentMon's CPU load reads 0.00 | Either it really is that low or its process time isn't measured |
-| 5 | Replace the demo screenshots with real captures | README and report screenshots still show generated data |
+| 1 | Global hotkey for start and stop | No alt-tab needed, so captures end cleanly and the foreground rules have less to guess |
+| 2 | Check why PresentMon's CPU load reads 0.00 | Either it really is that low or its process time isn't measured |
+| 3 | Replace the demo screenshots with real captures | README and report screenshots still show generated data |
+| 4 | Check the two changes of the next beta on the real captures | Both are tested with simulated data only: the header numbers of the Control Resonant sessions, and a session saved before beta.14 |
 
 ### Before stable v0.1.0
 
 | # | Task | Blocked by |
 |---|---|---|
-| 6 | NVIDIA validation: NVML sensors, throttle reasons, shader compiler sampling, DLSS-FG pattern | A tester with an NVIDIA card |
-| 7 | Threshold review with more captures: other games, an Intel CPU, a PC with a real system-side problem | More captures |
-| 8 | Confirm the labelled frame generation path (AFMF, XeSS-FG) | A capture with AFMF on |
-| 9 | Tag v0.1.0 and mark it as the latest release | 6 and 7 |
-| 10 | Copyright line in `LICENSE` | Decision: "KaroqDave" or real name |
+| 5 | NVIDIA validation: NVML sensors, throttle reasons, shader compiler sampling, DLSS-FG pattern | A tester with an NVIDIA card |
+| 6 | Threshold review with more captures: other games, an Intel CPU, a PC with a real system-side problem | More captures |
+| 7 | Confirm the labelled frame generation path (AFMF, XeSS-FG) | A capture with AFMF on |
+| 8 | Tag v0.1.0 and mark it as the latest release | 5 and 6 |
+| 9 | Copyright line in `LICENSE` | Decision: "KaroqDave" or real name |
 
 ### Later
 
