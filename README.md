@@ -42,6 +42,10 @@ You also need the PresentMon console app (`PresentMon-2.x-x64.exe`) from
    **Start capture**, and play. Minimise FrameScope while you do.
 5. Press **Stop**. Read the verdict, the spike table and the **Findings** tab.
 
+Instead of the buttons you can press **Ctrl+Shift+F10** inside the game to start and stop: a
+rising tone means started, a falling one stopped, a low one that it didn't work (see the log).
+Change the keys or switch the tones off under **Tools → Capture hotkey**.
+
 Each spike gets its cause about 4 seconds after it happens.
 
 ## Reading the results
@@ -93,6 +97,7 @@ evidence, not proof.
 | Report | File → Export report | One self-contained HTML file to keep or share |
 | Run comparison | Tools → Compare with earlier run | Two runs of the same scene: fewer spikes on run 2 means shader compilation, spikes at the same moments mean game content, random spikes point to the system |
 | Frame generation | automatic | AFMF, FSR-FG, XeSS-FG and DLSS-FG are recognised, also when switched on or off during a capture; spikes and FPS always describe the frames the game rendered, with FPS on screen shown separately |
+| Capture hotkey | Ctrl+Shift+F10 | Starts and stops a capture from inside the game, without alt-tabbing. A capture stopped this way counts right up to its end |
 | Loading and focus | automatic | Loading screens, alt-tabbing and closing the game are recognised and left out of the verdict |
 | Display pacing | automatic | Hitches on screen that the game's frame times don't show |
 | Light system trace | Tools menu | Less overhead; shader compilation is then not detected |

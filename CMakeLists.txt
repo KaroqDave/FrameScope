@@ -150,6 +150,8 @@ if(FRAMESCOPE_BUILD_GUI)
         src/ui/FrameTimeView.cpp
         src/ui/Settings.h
         src/ui/Settings.cpp
+        src/ui/GlobalHotkey.h
+        src/ui/GlobalHotkey.cpp
     )
 
     # PresentMon (and the ETW kernel session in M2) needs admin rights,

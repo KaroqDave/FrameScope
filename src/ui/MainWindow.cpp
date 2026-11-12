@@ -6,13 +6,17 @@
 #include "core/Report.h"
 #include "core/SessionFile.h"
 #include "ui/FrameTimeView.h"
+#include "ui/GlobalHotkey.h"
 #include "ui/Settings.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCoreApplication>
 #include <QCheckBox>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -21,6 +25,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -48,6 +53,10 @@ constexpr auto kKeyProcess = "capture/processName";
 constexpr auto kKeyTrace = "capture/systemTrace";
 constexpr auto kKeyLastDir = "files/lastDir";
 constexpr auto kKeyLightTrace = "capture/lightTrace";
+constexpr auto kKeyHotkey = "capture/hotkey";           // empty = switched off
+constexpr auto kKeyHotkeySound = "capture/hotkeySound";
+// Not used by Windows, Steam, GeForce Experience / NVIDIA app or AMD Software by default.
+constexpr auto kDefaultHotkey = "Ctrl+Shift+F10";
 
 constexpr int kBaselineSeconds = 30;
 
@@ -146,8 +155,25 @@ MainWindow::MainWindow(QWidget* parent)
         stopSystemTrace();
         m_mode = Mode::Idle;
         setBusy(false);
+        if (m_startedByHotkey) {
+            // A dialog would sit behind the game, or pull the player out of it.
+            hotkeyTone(static_cast<int>(HotkeyTone::Failed));
+            m_verdictLabel->setText(tr("Capture failed: %1").arg(msg));
+            return;
+        }
         QMessageBox::warning(this, tr("Capture failed"), msg);
     });
+
+    m_hotkey = new GlobalHotkey(this);
+    connect(m_hotkey, &GlobalHotkey::pressed, this, &MainWindow::onHotkey);
+    m_hotkeySound = settings.value(kKeyHotkeySound, true).toBool();
+    if (GlobalHotkey::isSupported()) {
+        applyHotkey(QKeySequence::fromString(settings.value(kKeyHotkey, QString::fromLatin1(kDefaultHotkey)).toString(),
+                                             QKeySequence::PortableText),
+                    false);
+    } else {
+        applyHotkey({}, false);
+    }
 
     // Repaint at ~30 Hz instead of per frame batch.
     m_refreshTimer = new QTimer(this);
@@ -339,6 +365,9 @@ void MainWindow::buildMenus()
         QSettings(settingsFile(), QSettings::IniFormat).setValue(kKeyLightTrace, on);
     });
     m_fileActions << m_lightTraceAction;
+    // Stays enabled while capturing, like the hotkey itself.
+    m_hotkeyAction = tools->addAction(tr("Capture &hotkey…"), this, &MainWindow::chooseHotkey);
+    m_hotkeyAction->setEnabled(GlobalHotkey::isSupported());
     tools->addSeparator();
     tools->addAction(tr("Save &diagnostics…"), this, &MainWindow::saveDiagnostics);
 }
@@ -477,8 +506,12 @@ void MainWindow::pumpTrace(bool final)
         const double settleMs = final ? 0.0 : kSettleMs;
         if (m_session.attributePending(m_timeline, settleMs, m_correlatorConfig) > 0)
             m_spikeTableStale = true;
-        if (final && m_session.closeOut() > 0)
-            m_spikeTableStale = true;
+        if (final) {
+            // Stopped by hotkey with the game still in front: the end of the capture is play.
+            m_session.setEndedInPlay(m_stoppedByHotkey);
+            if (m_session.closeOut() > 0)
+                m_spikeTableStale = true;
+        }
         // Rebuilding thousands of rows every second would cost more than the trace itself.
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 minGapMs = m_session.spikes().size() > 1000 ? 10'000 : 0;
@@ -525,6 +558,9 @@ void MainWindow::startCapture()
     if (m_mode != Mode::Idle)
         return;
 
+    // onHotkey() sets these again right after its own call.
+    m_startedByHotkey = false;
+    m_stoppedByHotkey = false;
     m_mode = Mode::Capture;
     m_session.clear();
     m_timeline.clear();
@@ -619,6 +655,115 @@ void MainWindow::onFrames(const std::vector<core::FrameRecord>& frames)
     }
     m_spikeTable->setSortingEnabled(true);
     m_dirty = true;
+}
+
+// ===========================================================================
+// Global hotkey
+// ===========================================================================
+
+void MainWindow::hotkeyTone(int tone)
+{
+    if (m_hotkeySound)
+        playHotkeyTone(static_cast<HotkeyTone>(tone));
+}
+
+void MainWindow::onHotkey()
+{
+    switch (m_mode) {
+    case Mode::Baseline:
+        return; // runs on its own timer
+    case Mode::Capture:
+        // In front of the game = stopped in play. Pressed from another window
+        // (FrameScope itself, the desktop), the usual rules about leaving apply.
+        m_stoppedByHotkey = m_gamePid != 0 && win::foregroundProcessId() == m_gamePid;
+        stopCapture();
+        hotkeyTone(static_cast<int>(HotkeyTone::Stopped));
+        return;
+    case Mode::Idle:
+        break;
+    }
+
+    // Starting: nothing here may open a dialog, the player is in the game.
+    QString problem;
+    if (QApplication::activeModalWidget())
+        problem = tr("a dialog is open in FrameScope");
+    else if (m_presentMonPath->text().trimmed().isEmpty())
+        problem = tr("the path to PresentMon is missing");
+    else if (m_processName->text().trimmed().isEmpty())
+        problem = tr("the game's exe name is missing");
+    if (!problem.isEmpty()) {
+        log(tr("Hotkey: capture not started, %1.").arg(problem));
+        hotkeyTone(static_cast<int>(HotkeyTone::Failed));
+        return;
+    }
+    startCapture();
+    if (m_mode != Mode::Capture)
+        return; // failed right away; the failed() handler has reported it
+    m_startedByHotkey = true;
+    log(tr("Capture started with the hotkey %1.").arg(m_hotkey->sequence().toString(QKeySequence::NativeText)));
+    hotkeyTone(static_cast<int>(HotkeyTone::Started));
+}
+
+void MainWindow::applyHotkey(const QKeySequence& sequence, bool save)
+{
+    const bool ok = m_hotkey->set(sequence);
+    if (!ok)
+        log(tr("Hotkey: %1").arg(m_hotkey->lastError()));
+    if (ok && save) {
+        QSettings(settingsFile(), QSettings::IniFormat)
+            .setValue(kKeyHotkey, m_hotkey->sequence().toString(QKeySequence::PortableText));
+    }
+
+    const auto current = m_hotkey->sequence().toString(QKeySequence::NativeText);
+    if (m_hotkeyAction) {
+        m_hotkeyAction->setText(current.isEmpty() ? tr("Capture &hotkey (off)…")
+                                                  : tr("Capture &hotkey (%1)…").arg(current));
+    }
+    const auto hint = current.isEmpty() ? QString{}
+                                        : tr("Hotkey: %1, also while the game is in front").arg(current);
+    m_startButton->setToolTip(hint);
+    m_stopButton->setToolTip(hint);
+}
+
+void MainWindow::chooseHotkey()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Capture hotkey"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* text = new QLabel(tr("Starts and stops a capture from inside the game, so there is no need to alt-tab.\n"
+                               "Click the field and press the keys. Leave it empty for no hotkey."));
+    text->setWordWrap(true);
+    layout->addWidget(text);
+    auto* edit = new QKeySequenceEdit(m_hotkey->sequence());
+    edit->setClearButtonEnabled(true);
+    layout->addWidget(edit);
+    auto* sound = new QCheckBox(tr("Play a short tone when the hotkey starts or stops a capture"));
+    sound->setChecked(m_hotkeySound);
+    layout->addWidget(sound);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    // While the dialog is open the old hotkey must not fire (pressing it is how one confirms it).
+    const auto before = m_hotkey->sequence();
+    m_hotkey->set({});
+    const bool accepted = dialog.exec() == QDialog::Accepted;
+    if (!accepted) {
+        applyHotkey(before, false);
+        return;
+    }
+    m_hotkeySound = sound->isChecked();
+    QSettings(settingsFile(), QSettings::IniFormat).setValue(kKeyHotkeySound, m_hotkeySound);
+
+    const auto wanted = edit->keySequence();
+    const QKeySequence first = wanted.isEmpty() ? QKeySequence{} : QKeySequence{wanted[0]};
+    applyHotkey(first, true);
+    if (m_hotkey->sequence() != first) {
+        const auto error = m_hotkey->lastError();
+        applyHotkey(before, false);
+        QMessageBox::warning(this, tr("Capture hotkey"), error);
+    }
 }
 
 // ===========================================================================
@@ -773,7 +918,7 @@ void MainWindow::openSessionFile(const QString& path)
         m_sensors = s.sensors;
         m_loadedFindings = std::move(s.findings);
         m_loadedDrivers = std::move(s.drivers);
-        m_session.restore(std::move(s.frames), std::move(s.spikes), std::move(s.frameGeneration));
+        m_session.restore(std::move(s.frames), std::move(s.spikes), std::move(s.frameGeneration), s.endedInPlay);
     } catch (const std::exception& e) {
         QMessageBox::warning(this, tr("Could not open session"), QString::fromUtf8(e.what()));
         return;
@@ -820,6 +965,7 @@ void MainWindow::saveSession()
     s.findings = currentFindings();
     s.drivers = currentDrivers();
     s.gamePid = m_gamePid;
+    s.endedInPlay = m_session.endedInPlay();
     s.frameGeneration = m_session.frameGeneration();
     s.shaderWrites = core::shaderWritesForSession(m_timeline, m_session.frames());
     try {
@@ -884,7 +1030,7 @@ void MainWindow::compareWithEarlierRun()
     try {
         if (core::isSessionFile(path.toStdWString())) {
             auto s = core::loadSession(path.toStdWString());
-            earlier.restore(std::move(s.frames), std::move(s.spikes), std::move(s.frameGeneration));
+            earlier.restore(std::move(s.frames), std::move(s.spikes), std::move(s.frameGeneration), s.endedInPlay);
         } else {
             for (auto& f : core::loadPresentMonCsv(path.toStdWString()))
                 earlier.append(std::move(f));

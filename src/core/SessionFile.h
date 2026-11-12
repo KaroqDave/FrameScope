@@ -35,6 +35,7 @@ struct SavedSession {
     std::uint32_t gamePid = 0;
     std::string frameGeneration; // "AMD AFMF", "AMD FSR-FG" ...; empty if none seen
     std::vector<ShaderWriteRecord> shaderWrites;
+    bool endedInPlay = false; // stopped with the hotkey while the game ran on (see CaptureSession)
 };
 
 // Maps shader cache write events from the timeline onto the session's time

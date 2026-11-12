@@ -82,6 +82,8 @@ void saveSession(const std::filesystem::path& path, const SavedSession& s)
     out << "gamepid\t" << s.gamePid << '\n';
     if (!s.frameGeneration.empty())
         out << "framegen\t" << clean(s.frameGeneration) << '\n';
+    if (s.endedInPlay)
+        out << "ended\tinplay\n";
 
     out << "[frames]\n";
     for (const auto& f : s.frames)
@@ -188,6 +190,8 @@ SavedSession loadSession(const std::filesystem::path& path)
                 s.gamePid = static_cast<std::uint32_t>(num(value));
             else if (f[0] == "framegen")
                 s.frameGeneration = value;
+            else if (f[0] == "ended")
+                s.endedInPlay = value == "inplay";
         } else if (section == "[frames]") {
             const auto f = splitTabs(line);
             if (f.size() < 4)

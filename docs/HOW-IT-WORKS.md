@@ -58,6 +58,10 @@ and the stutter pattern. **1% low** and **worst frame** leave out their frames t
 the frames between two such spikes at most 0.25 s apart (the same loading screen). Duration,
 average FPS and the spike count still cover the whole capture.
 
+A capture stopped with the hotkey while the game was in front ended in play: the rule about
+the slowdown right before the capture's end is skipped, and the session file notes it
+(`ended	inplay`) so reopening the session doesn't apply the rule either.
+
 Opening a saved session runs the frame generation filter again. If it folds generated frames
 (a session saved before that pattern was recognised), the spikes are detected anew; each keeps
 the cause of the saved spike that ended within its frame. Saving the session keeps the result.
