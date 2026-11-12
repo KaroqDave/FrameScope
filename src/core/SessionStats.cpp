@@ -13,6 +13,7 @@ std::vector<bool> leftOutFrames(std::span<const FrameRecord> frames, std::span<c
     for (const auto& s : spikes) {
         const bool leftOut = s.attribution && s.frameIndex < frames.size()
                              && (s.attribution->cause == Cause::Loading
+                                 || s.attribution->cause == Cause::SettingsChange
                                  || s.attribution->cause == Cause::NotInForeground);
         if (!leftOut) {
             previous = nullptr;

@@ -51,7 +51,7 @@ Each spike gets its cause about 4 seconds after it happens.
 ## Reading the results
 
 **Verdict:** one line, e.g. *Mostly the game: 86% of spikes. Top cause: Shader compilation.*
-Loading screens and the moments around leaving the game are not counted; a finding says how
+Loading screens, changing graphics settings and the moments around leaving the game are not counted; a finding says how
 many spikes were left out and why.
 
 **Graph:** frame times with a dot per spike. Red = your system, violet = the game, amber =
@@ -81,6 +81,7 @@ linked to and what to do.
 | Game CPU work / Game GPU work | Game | The game's own work; lower the matching settings |
 | Unexplained wait | Unknown | Capture again with the full trace; try without V-Sync or limiters |
 | Loading | not counted | Loading screens and level changes, where the game all but stops presenting for 1.5 s or more, are left out of the verdict |
+| Settings or scene change | not counted | A burst of spikes after which the frame rate stays at a clearly different level (1.5x or more), as when graphics settings change or a menu opens |
 | Game not in foreground | not counted | Spikes while another window is in front, and the slowdown right before alt-tabbing, closing the game or stopping the capture, are left out of the verdict |
 
 "Likely cause" means: this is what the system data during that frame points to. It is strong

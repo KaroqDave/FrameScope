@@ -69,7 +69,7 @@ void printStats(const CaptureSession& session)
     out(stdout, "1% low FPS    {:>10.1f}", s.onePercentLowFps);
     out(stdout, "Worst frame   {:>10.1f} ms", s.worstFrameMs);
     if (s.leftOutFrames > 0)
-        out(stdout, "              {:>10} frames left out of 1% low and worst frame (loading, game not in front)",
+        out(stdout, "              {:>10} frames left out of 1% low and worst frame (loading, settings changes, game not in front)",
             s.leftOutFrames);
     out(stdout, "Spikes        {:>10}  ({:.1f}/min)", s.spikes, s.spikesPerMinute);
     const auto d = session.diagnosis();

@@ -1376,8 +1376,8 @@ void MainWindow::refresh()
         text += tr(" · %1 fps on screen with frame generation").arg(d.displayedFps, 0, 'f', 0);
     m_statsLabel->setText(text);
     m_statsLabel->setToolTip(s.leftOutFrames > 0
-                                 ? tr("1% low and worst frame leave out %1 frames during loading or while the game "
-                                      "wasn't in front").arg(s.leftOutFrames)
+                                 ? tr("1% low and worst frame leave out %1 frames during loading, settings changes or "
+                                      "while the game wasn't in front").arg(s.leftOutFrames)
                                  : QString{});
 }
 

@@ -2,9 +2,12 @@
 
 #include "core/FrameGenerationFilter.h"
 
+#include <algorithm>
 #include <format>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace framescope::core {
 
@@ -51,7 +54,7 @@ std::size_t CaptureSession::attributePending(const EventTimeline& timeline, doub
         ++done;
     }
     if (done > 0)
-        done += markLeadUpToFocusLoss(m_spikes) + markLoading(m_spikes);
+        done += markLeadUpToFocusLoss(m_spikes) + markLoading(m_spikes) + markSettingsChange(m_spikes, m_frames, false);
     return done;
 }
 
@@ -140,12 +143,79 @@ std::size_t markLoading(std::span<Spike> spikes, double minStalledS, double maxG
     return changed;
 }
 
+namespace {
+
+// Median frame time of the frames in [fromS, toS] that aren't spikes; empty
+// if they cover less than minS.
+std::optional<double> levelMs(std::span<const FrameRecord> frames, std::span<const Spike> spikes, double fromS,
+                              double toS, double minS)
+{
+    const auto byTime = [](const FrameRecord& f, double t) { return f.timeSeconds < t; };
+    const auto first = std::lower_bound(frames.begin(), frames.end(), fromS, byTime);
+    const auto last = std::lower_bound(first, frames.end(), toS, byTime);
+    const auto firstIndex = static_cast<std::size_t>(first - frames.begin());
+    const auto lastIndex = static_cast<std::size_t>(last - frames.begin());
+    auto spike = std::lower_bound(spikes.begin(), spikes.end(), firstIndex,
+                                  [](const Spike& s, std::size_t i) { return s.frameIndex < i; });
+    std::vector<double> times;
+    double coveredMs = 0.0;
+    for (std::size_t i = firstIndex; i < lastIndex; ++i) {
+        coveredMs += frames[i].frameTimeMs;
+        while (spike != spikes.end() && spike->frameIndex < i)
+            ++spike;
+        if (spike != spikes.end() && spike->frameIndex == i)
+            continue;
+        times.push_back(frames[i].frameTimeMs);
+    }
+    if (times.empty() || coveredMs < minS * 1000.0)
+        return std::nullopt;
+    const auto mid = times.begin() + static_cast<std::ptrdiff_t>(times.size() / 2);
+    std::nth_element(times.begin(), mid, times.end());
+    return *mid;
+}
+
+} // namespace
+
+std::size_t markSettingsChange(std::span<Spike> spikes, std::span<const FrameRecord> frames, bool captureEnded,
+                               const SettingsChangeConfig& cfg)
+{
+    const double minAfterS = captureEnded ? cfg.minWindowS : std::max(cfg.minWindowS, cfg.windowS - 0.5);
+    const auto start = [](const Spike& s) { return s.timeSeconds - s.frameTimeMs / 1000.0; };
+    std::size_t changed = 0;
+    for (std::size_t first = 0; first < spikes.size();) {
+        std::size_t last = first;
+        while (last + 1 < spikes.size() && start(spikes[last + 1]) - spikes[last].timeSeconds <= cfg.maxGapS)
+            ++last;
+        const double from = start(spikes[first]), to = spikes[last].timeSeconds;
+        if (last - first + 1 >= cfg.minSpikes && to - from <= cfg.maxBurstS) {
+            const auto before = levelMs(frames, spikes, from - cfg.windowS, from, cfg.minWindowS);
+            const auto after = levelMs(frames, spikes, to + 1e-9, to + cfg.windowS, minAfterS);
+            if (before && after && *before > 0.0 && *after > 0.0
+                && std::max(*before, *after) >= cfg.minRatio * std::min(*before, *after)) {
+                for (std::size_t i = first; i <= last; ++i) {
+                    auto& s = spikes[i];
+                    if (!s.attribution || !countsForVerdict(s.attribution->cause) || s.attribution->side == Side::System)
+                        continue; // not attributed yet, already left out, or a system-side cause that stands
+                    s.attribution = Attribution{Cause::SettingsChange, Side::Unknown, 0.5,
+                                                std::format("The frame rate went from {:.0f} to {:.0f} fps and stayed "
+                                                            "there (graphics settings changed, or a menu); not counted",
+                                                            1000.0 / *before, 1000.0 / *after),
+                                                {}};
+                    ++changed;
+                }
+            }
+        }
+        first = last + 1;
+    }
+    return changed;
+}
+
 std::size_t CaptureSession::closeOut()
 {
     if (m_frames.empty())
         return 0;
     const auto atEnd = m_endedInPlay ? 0 : markSlowdownAtCaptureEnd(m_spikes, m_frames.back().timeSeconds);
-    return markLeadUpToFocusLoss(m_spikes) + atEnd + markLoading(m_spikes);
+    return markLeadUpToFocusLoss(m_spikes) + atEnd + markLoading(m_spikes) + markSettingsChange(m_spikes, m_frames);
 }
 
 void CaptureSession::restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes, std::string frameGeneration,
