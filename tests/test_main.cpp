@@ -227,15 +227,141 @@ void stats()
     for (int i = 0; i < 11; ++i)
         frames[i * 90].frameTimeMs = 50.0; // just over 1% slow frames
 
-    const auto s = computeStats(frames, 11);
+    const std::vector<Spike> eleven(11);
+    const auto s = computeStats(frames, eleven);
     CHECK(s.frames == 1000);
     CHECK(near(s.durationSeconds, (989 * 16.0 + 11 * 50.0) / 1000.0));
     CHECK(near(s.worstFrameMs, 50.0));
     CHECK(near(s.onePercentLowFps, 20.0)); // p99 lands on a 50 ms frame
     CHECK(s.spikesPerMinute > 0.0);
 
-    const auto empty = computeStats({}, 0);
+    const auto empty = computeStats({}, {});
     CHECK(empty.frames == 0 && empty.averageFps == 0.0);
+}
+
+// Loading screens and frames while the game isn't in front don't go into
+// worst frame and 1% low.
+void statsLeaveOutLoading()
+{
+    std::vector<FrameRecord> frames(2000, frame(10.0));
+    frames[300].frameTimeMs = 40.0;   // real stutter
+    frames[900].frameTimeMs = 1400.0; // loading screen: two stalls ...
+    frames[901].frameTimeMs = 30.0;   // ... with a slow frame in between that was no spike
+    frames[902].frameTimeMs = 2500.0;
+    frames[1500].frameTimeMs = 700.0; // alt-tab
+    double t = 0.0;
+    for (auto& f : frames) {
+        t += f.frameTimeMs / 1000.0;
+        f.timeSeconds = t;
+    }
+    const auto spikeAt = [&](std::size_t i, std::optional<Cause> cause) {
+        Spike sp;
+        sp.frameIndex = i;
+        sp.timeSeconds = frames[i].timeSeconds;
+        sp.frameTimeMs = frames[i].frameTimeMs;
+        sp.medianMs = 10.0;
+        if (cause)
+            sp.attribution = Attribution{*cause, Side::Unknown, 0.6, {}, {}};
+        return sp;
+    };
+    std::vector<Spike> spikes{spikeAt(300, Cause::GameCpu), spikeAt(900, Cause::Loading), spikeAt(902, Cause::Loading),
+                              spikeAt(1500, Cause::NotInForeground)};
+
+    const auto leftOut = leftOutFrames(frames, spikes);
+    CHECK(leftOut[900] && leftOut[901] && leftOut[902] && leftOut[1500]);
+    CHECK(!leftOut[300] && !leftOut[899] && !leftOut[903]);
+
+    const auto s = computeStats(frames, spikes);
+    CHECK(s.leftOutFrames == 4 && s.frames == 2000 && s.spikes == 4);
+    CHECK(near(s.worstFrameMs, 40.0));
+    CHECK(near(s.onePercentLowFps, 100.0));
+    CHECK(near(s.durationSeconds, frames.back().timeSeconds)); // the capture's real length
+
+    // Not attributed (no trace, e.g. an opened CSV): everything counts, as before.
+    for (auto& sp : spikes)
+        sp.attribution.reset();
+    const auto plain = computeStats(frames, spikes);
+    CHECK(plain.leftOutFrames == 0 && near(plain.worstFrameMs, 2500.0));
+
+    // Frames between two left-out spikes far apart stay in.
+    std::vector<Spike> apart{spikeAt(900, Cause::Loading), spikeAt(1500, Cause::NotInForeground)};
+    CHECK(computeStats(frames, apart).leftOutFrames == 2);
+
+    // The report says what the numbers describe.
+    ReportData d;
+    d.title = "t";
+    d.frames = frames;
+    const std::vector<Spike> two{spikeAt(300, Cause::GameCpu), spikeAt(900, Cause::Loading)};
+    d.spikes = two;
+    CHECK(renderHtmlReport(d).contains("Worst frame (in play)"));
+    d.spikes = std::span{two}.first(1);
+    CHECK(!renderHtmlReport(d).contains("(in play)"));
+}
+
+// A session saved before evenly paced frame generation was recognised: every
+// generated frame is a frame of its own. Opening it folds them and finds the
+// spikes again; causes carry over.
+void restoreRefiltersFrameGeneration()
+{
+    std::vector<FrameRecord> raw;
+    double t = 0.0;
+    for (int i = 0; i < 4000; ++i) {
+        const bool rendered = i % 2 == 1;
+        auto f = rendered ? frame(8.0, 15.0, 12.0) : frame(8.0, 0.0, 0.0);
+        if (i == 2001)
+            f = frame(60.0, 66.0, 12.0); // a real hitch
+        t += f.frameTimeMs / 1000.0;
+        f.timeSeconds = t;
+        f.displayTracked = true;
+        f.displayedMs = 8.0;
+        raw.push_back(f);
+    }
+    const auto spikeAt = [&](std::size_t i, Cause cause, Side side) {
+        Spike sp;
+        sp.frameIndex = i;
+        sp.timeSeconds = raw[i].timeSeconds;
+        sp.frameTimeMs = raw[i].frameTimeMs;
+        sp.medianMs = 8.0;
+        sp.attribution = Attribution{cause, side, 0.8, "saved", {}};
+        return sp;
+    };
+    // As saved: the hitch, and a false spike on an ordinary frame.
+    std::vector<Spike> saved{spikeAt(1000, Cause::GameCpu, Side::Game), spikeAt(2001, Cause::DriverLatency, Side::System)};
+
+    CaptureSession cs;
+    cs.restore(raw, saved);
+    CHECK(cs.refilteredFrames() == 2000 && cs.spikesBeforeRefilter() == 2);
+    CHECK(cs.frames().size() == 2000);
+    CHECK(near(cs.frames()[500].frameTimeMs, 16.0) && cs.frames()[500].generatedFrames == 1);
+    CHECK(near(cs.frames().back().timeSeconds, raw.back().timeSeconds, 1e-9));
+    CHECK(cs.spikes().size() == 1);
+    if (cs.spikes().size() == 1) {
+        const auto& sp = cs.spikes()[0];
+        CHECK(sp.frameIndex == 1000 && near(sp.frameTimeMs, 68.0) && near(sp.medianMs, 16.0));
+        CHECK(near(sp.timeSeconds, raw[2001].timeSeconds, 1e-9));
+        CHECK(sp.attribution && sp.attribution->cause == Cause::DriverLatency && sp.attribution->detail == "saved");
+    }
+    CHECK(cs.frameGeneration() == "2x, detected from the frame pattern");
+
+    // The stored name wins over the detected one.
+    CaptureSession named;
+    named.restore(raw, saved, "AMD FSR Frame Generation");
+    CHECK(named.frameGeneration() == "AMD FSR Frame Generation" && named.refilteredFrames() == 2000);
+
+    // Saved again and reopened: already folded, nothing changes.
+    CaptureSession again;
+    again.restore(cs.frames(), cs.spikes(), cs.frameGeneration());
+    CHECK(again.refilteredFrames() == 0 && again.frames().size() == 2000 && again.spikes().size() == 1);
+    CHECK(again.spikes()[0].frameIndex == 1000 && again.spikes()[0].attribution);
+
+    // No frame generation: the session is taken as it is, even spikes the detector wouldn't find.
+    std::vector<FrameRecord> plain(500, frame(16.0, 9.0, 14.0));
+    Spike odd;
+    odd.frameIndex = 5;
+    odd.frameTimeMs = 16.0;
+    CaptureSession untouched;
+    untouched.restore(plain, {odd});
+    CHECK(untouched.refilteredFrames() == 0 && untouched.spikes().size() == 1 && untouched.frames().size() == 500);
 }
 
 void session()
@@ -1835,6 +1961,8 @@ int main()
         {"classification", classification},
         {"medianEven", medianEven},
         {"stats", stats},
+        {"statsLeaveOutLoading", statsLeaveOutLoading},
+        {"restoreRefiltersFrameGeneration", restoreRefiltersFrameGeneration},
         {"session", session},
         {"parserQpcColumns", parserQpcColumns},
         {"timelineOverlap", timelineOverlap},

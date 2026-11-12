@@ -48,7 +48,7 @@ std::vector<double> times(std::span<const Spike> spikes)
 RunSummary summarizeRun(std::span<const FrameRecord> frames, std::span<const Spike> spikes)
 {
     RunSummary r;
-    r.stats = computeStats(frames, spikes.size());
+    r.stats = computeStats(frames, spikes);
     for (const auto& s : spikes) {
         switch (s.bound) {
         case Bound::Cpu:   ++r.cpuSpikes; break;

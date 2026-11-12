@@ -54,7 +54,13 @@ plus 1 ms before it.
 Confidence grows with the share of the excess that the evidence explains.
 
 "Not counted" spikes stay in the spike table but are left out of the verdict, the percentages
-and the stutter pattern. Average FPS, 1% low and worst frame still include those frames.
+and the stutter pattern. **1% low** and **worst frame** leave out their frames too, along with
+the frames between two such spikes at most 0.25 s apart (the same loading screen). Duration,
+average FPS and the spike count still cover the whole capture.
+
+Opening a saved session runs the frame generation filter again. If it folds generated frames
+(a session saved before that pattern was recognised), the spikes are detected anew; each keeps
+the cause of the saved spike that ended within its frame. Saving the session keeps the result.
 
 ## Session checks (Findings)
 

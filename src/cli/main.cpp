@@ -44,8 +44,11 @@ Loaded load(const std::filesystem::path& path)
     Loaded l;
     if (isSessionFile(path)) {
         l.meta = loadSession(path);
-        l.session.restore(l.meta.frames, l.meta.spikes);
-        l.session.setFrameGeneration(l.meta.frameGeneration);
+        l.session.restore(l.meta.frames, l.meta.spikes, l.meta.frameGeneration);
+        if (const auto n = l.session.refilteredFrames(); n > 0) {
+            out(stdout, "{}: older session, {} generated frames folded into their rendered frames ({} -> {} spikes)",
+                path.filename().string(), n, l.session.spikesBeforeRefilter(), l.session.spikes().size());
+        }
     } else {
         std::string frameGeneration;
         for (auto& f : loadPresentMonCsv(path, &frameGeneration))
@@ -65,6 +68,9 @@ void printStats(const CaptureSession& session)
     out(stdout, "Average FPS   {:>10.1f}", s.averageFps);
     out(stdout, "1% low FPS    {:>10.1f}", s.onePercentLowFps);
     out(stdout, "Worst frame   {:>10.1f} ms", s.worstFrameMs);
+    if (s.leftOutFrames > 0)
+        out(stdout, "              {:>10} frames left out of 1% low and worst frame (loading, game not in front)",
+            s.leftOutFrames);
     out(stdout, "Spikes        {:>10}  ({:.1f}/min)", s.spikes, s.spikesPerMinute);
     const auto d = session.diagnosis();
     if (d.attributed > 0)

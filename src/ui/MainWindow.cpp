@@ -773,8 +773,7 @@ void MainWindow::openSessionFile(const QString& path)
         m_sensors = s.sensors;
         m_loadedFindings = std::move(s.findings);
         m_loadedDrivers = std::move(s.drivers);
-        m_session.restore(std::move(s.frames), std::move(s.spikes));
-        m_session.setFrameGeneration(s.frameGeneration);
+        m_session.restore(std::move(s.frames), std::move(s.spikes), std::move(s.frameGeneration));
     } catch (const std::exception& e) {
         QMessageBox::warning(this, tr("Could not open session"), QString::fromUtf8(e.what()));
         return;
@@ -783,6 +782,13 @@ void MainWindow::openSessionFile(const QString& path)
     rebuildSpikeTable();
     m_view->showAll();
     log(tr("Opened session %1 (%2 frames, %3 spikes)").arg(path).arg(m_session.frames().size()).arg(m_session.spikes().size()));
+    if (const auto folded = m_session.refilteredFrames(); folded > 0) {
+        log(tr("Older session: %1 generated frames folded into their rendered frames, %2 spikes before, %3 now. "
+               "Save the session to keep it this way.")
+                .arg(folded)
+                .arg(m_session.spikesBeforeRefilter())
+                .arg(m_session.spikes().size()));
+    }
     updateVerdict();
     updateFindings();
     refresh();
@@ -878,7 +884,7 @@ void MainWindow::compareWithEarlierRun()
     try {
         if (core::isSessionFile(path.toStdWString())) {
             auto s = core::loadSession(path.toStdWString());
-            earlier.restore(std::move(s.frames), std::move(s.spikes));
+            earlier.restore(std::move(s.frames), std::move(s.spikes), std::move(s.frameGeneration));
         } else {
             for (auto& f : core::loadPresentMonCsv(path.toStdWString()))
                 earlier.append(std::move(f));
@@ -1223,6 +1229,10 @@ void MainWindow::refresh()
     if (const auto& d = displayAnalysis(); d.available && d.generatedShare() >= 0.05)
         text += tr(" · %1 fps on screen with frame generation").arg(d.displayedFps, 0, 'f', 0);
     m_statsLabel->setText(text);
+    m_statsLabel->setToolTip(s.leftOutFrames > 0
+                                 ? tr("1% low and worst frame leave out %1 frames during loading or while the game "
+                                      "wasn't in front").arg(s.leftOutFrames)
+                                 : QString{});
 }
 
 void MainWindow::log(const QString& message)

@@ -1,5 +1,7 @@
 #include "core/CaptureSession.h"
 
+#include "core/FrameGenerationFilter.h"
+
 #include <format>
 #include <string>
 #include <string_view>
@@ -26,6 +28,8 @@ void CaptureSession::clear()
     m_frames.clear();
     m_spikes.clear();
     m_frameGeneration.clear();
+    m_refilteredFrames = 0;
+    m_spikesBeforeRefilter = 0;
 }
 
 std::size_t CaptureSession::attributePending(const EventTimeline& timeline, double settleMs,
@@ -143,17 +147,59 @@ std::size_t CaptureSession::closeOut()
            + markLoading(m_spikes);
 }
 
-void CaptureSession::restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes)
+void CaptureSession::restore(std::vector<FrameRecord> frames, std::vector<Spike> spikes, std::string frameGeneration)
 {
     m_detector.reset();
+    m_refilteredFrames = 0;
+    m_spikesBeforeRefilter = spikes.size();
+
+    FrameGenerationFilter filter;
+    std::vector<FrameRecord> folded;
+    folded.reserve(frames.size());
+    for (const auto& f : frames) {
+        for (auto& r : filter.push(f))
+            folded.push_back(std::move(r));
+    }
+    for (auto& r : filter.flush())
+        folded.push_back(std::move(r));
+
+    if (filter.mergedFrames() > 0) {
+        // The frames changed, so the spikes have to be found again. A spike
+        // keeps what was known about it: the cause of the saved spike that
+        // ended within its frame, preferably the one ending with it.
+        constexpr double kEps = 1e-6;
+        std::vector<Spike> found;
+        SpikeDetector detector{m_detector.config()};
+        std::size_t old = 0;
+        for (const auto& f : folded) {
+            auto spike = detector.push(f);
+            if (!spike)
+                continue;
+            const double from = f.timeSeconds - f.frameTimeMs / 1000.0;
+            while (old < spikes.size() && spikes[old].timeSeconds <= from + kEps)
+                ++old;
+            for (; old < spikes.size() && spikes[old].timeSeconds <= f.timeSeconds + kEps; ++old) {
+                if (spikes[old].attribution)
+                    spike->attribution = std::move(spikes[old].attribution);
+            }
+            found.push_back(std::move(*spike));
+        }
+        m_refilteredFrames = filter.mergedFrames();
+        frames = std::move(folded);
+        spikes = std::move(found);
+        if (frameGeneration.empty())
+            frameGeneration = filter.description();
+    }
+
     m_frames = std::move(frames);
     m_spikes = std::move(spikes);
+    m_frameGeneration = std::move(frameGeneration);
     closeOut(); // sessions saved before these rules existed
 }
 
 SessionStats CaptureSession::stats() const
 {
-    return computeStats(m_frames, m_spikes.size());
+    return computeStats(m_frames, m_spikes);
 }
 
 } // namespace framescope::core
